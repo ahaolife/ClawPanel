@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -172,7 +174,34 @@ func AIChat(cfg *config.Config) gin.HandlerFunc {
 
 		baseURL = strings.TrimRight(baseURL, "/")
 
+		// 读取 FAQ 文档注入到系统提示词
+		faqContent := ""
+		// 尝试从多个可能的位置读取 FAQ
+		faqPaths := []string{
+			filepath.Join(cfg.DataDir, "docs", "FAQ.md"),
+			"/opt/clawpanel/docs/FAQ.md",
+		}
+		// 也尝试从可执行文件同级目录读取
+		if exe, err := os.Executable(); err == nil {
+			faqPaths = append(faqPaths, filepath.Join(filepath.Dir(exe), "docs", "FAQ.md"))
+		}
+		for _, p := range faqPaths {
+			if data, err := os.ReadFile(p); err == nil {
+				faqContent = string(data)
+				break
+			}
+		}
+
 		// 系统提示词
+		faqSection := ""
+		if faqContent != "" {
+			faqSection = fmt.Sprintf(`
+
+以下是 ClawPanel 常见问题解答文档，请根据此文档优先回答用户问题：
+
+%s`, faqContent)
+		}
+
 		systemPrompt := fmt.Sprintf(`你是 ClawPanel 管理后台的 AI 助手。ClawPanel 是一个开源的 OpenClaw 智能助手管理面板。
 
 当前使用的模型: %s/%s (API: %s)
@@ -185,11 +214,14 @@ func AIChat(cfg *config.Config) gin.HandlerFunc {
 
 项目信息：
 - GitHub: https://github.com/zhaoxinyi02/ClawPanel
-- 技术栈: Go + React + Ant Design Pro (v5.0.0)
+- 技术栈: Go + React + TailwindCSS (v5.0.2)
 - 支持的通道: QQ, 微信, Telegram, Discord 等 20+
 - 技能系统: 支持 65+ 内置技能和自定义技能
+- 面板默认端口: 19527，默认密码: clawpanel
+- 面板数据目录: ~/.clawpanel/
+- 面板支持一键自检更新（国内加速服务器）
 
-回答要简洁、准确、友好。使用 Markdown 格式。`, pid, mid, apiType)
+回答要简洁、准确、友好。使用 Markdown 格式。优先根据 FAQ 文档回答，如果 FAQ 中没有相关内容再根据你的知识回答。%s`, pid, mid, apiType, faqSection)
 
 		// 构建完整消息列表
 		fullMessages := []map[string]string{{"role": "system", "content": systemPrompt}}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -27,6 +28,9 @@ import (
 
 //go:embed all:frontend/dist
 var frontendFS embed.FS
+
+//go:embed docs/FAQ.md
+var faqMD []byte
 
 func main() {
 	// Check if running as a Windows service
@@ -54,6 +58,11 @@ func runServer(stopCh chan struct{}) {
 	if err != nil {
 		log.Fatalf("[ClawPanel] 配置加载失败: %v", err)
 	}
+
+	// 写入内嵌 FAQ 文档到数据目录（供 AI 助手读取）
+	faqDir := filepath.Join(cfg.DataDir, "docs")
+	os.MkdirAll(faqDir, 0755)
+	os.WriteFile(filepath.Join(faqDir, "FAQ.md"), faqMD, 0644)
 
 	// 初始化数据库
 	db, err := model.InitDB(cfg.DataDir)
