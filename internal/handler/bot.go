@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -398,20 +399,48 @@ func NapcatLoginInfo(cfg *config.Config) gin.HandlerFunc {
 
 func NapcatLogout(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Restart the NapCat Docker container to force logout
 		go func() {
-			exec.Command("docker", "restart", "openclaw-qq").Run()
+			restartNapCatProcess(cfg)
 		}()
-		c.JSON(200, gin.H{"ok": true, "message": "QQ 正在退出登录，容器重启中..."})
+		c.JSON(200, gin.H{"ok": true, "message": "QQ 正在退出登录，NapCat 重启中..."})
 	}
 }
 
 func RestartNapcat(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		go func() {
-			exec.Command("docker", "restart", "openclaw-qq").Run()
+			restartNapCatProcess(cfg)
 		}()
-		c.JSON(200, gin.H{"ok": true, "message": "NapCat 容器正在重启..."})
+		c.JSON(200, gin.H{"ok": true, "message": "NapCat 正在重启..."})
+	}
+}
+
+// restartNapCatProcess restarts NapCat based on platform: Docker on Linux/macOS, Shell process on Windows
+func restartNapCatProcess(cfg *config.Config) {
+	if runtime.GOOS == "windows" {
+		// Kill NapCat processes on Windows
+		exec.Command("taskkill", "/F", "/IM", "NapCatWinBootMain.exe").Run()
+		exec.Command("taskkill", "/F", "/IM", "napcat.exe").Run()
+		exec.Command("taskkill", "/F", "/IM", "QQ.exe").Run()
+		// Restart: find and launch napcat.bat
+		napcatDir := getNapCatShellDir(cfg)
+		if napcatDir != "" {
+			batPath := filepath.Join(napcatDir, "napcat.bat")
+			if _, err := os.Stat(batPath); err == nil {
+				cmd := exec.Command("cmd", "/C", "start", "/B", batPath)
+				cmd.Dir = napcatDir
+				cmd.Start()
+				return
+			}
+			exePath := filepath.Join(napcatDir, "NapCatWinBootMain.exe")
+			if _, err := os.Stat(exePath); err == nil {
+				cmd := exec.Command(exePath)
+				cmd.Dir = napcatDir
+				cmd.Start()
+			}
+		}
+	} else {
+		exec.Command("docker", "restart", "openclaw-qq").Run()
 	}
 }
 

@@ -3,7 +3,7 @@ import { Outlet, NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, ScrollText, Radio, Sparkles, Clock, Settings,
   Moon, Sun, LogOut, Menu, FolderOpen, Cat, Languages, MessageSquare,
-  RotateCw, RefreshCw, Power,
+  RotateCw, RefreshCw, Power, Puzzle,
 } from 'lucide-react';
 import { useI18n } from '../i18n';
 import AIAssistant from './AIAssistant';
@@ -46,6 +46,7 @@ export default function Layout({ onLogout, napcatStatus, wechatStatus, openclawS
     { to: '/logs', icon: ScrollText, label: t.nav.activityLog },
     { to: '/channels', icon: Radio, label: t.nav.channels },
     { to: '/skills', icon: Sparkles, label: t.nav.skills },
+    { to: '/plugins', icon: Puzzle, label: locale === 'zh-CN' ? '插件中心' : 'Plugins' },
     { to: '/cron', icon: Clock, label: t.nav.cronJobs },
     { to: '/sessions', icon: MessageSquare, label: '会话管理' },
     { to: '/workspace', icon: FolderOpen, label: t.nav.workspace },

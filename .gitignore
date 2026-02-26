@@ -43,3 +43,6 @@ ClawPanel_logo/
 
 # Blog posts (not tracked in git)
 docs/blog-*.md
+
+# Copyright materials (not tracked in git)
+docs/copyright/

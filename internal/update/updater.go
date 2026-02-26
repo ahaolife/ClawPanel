@@ -248,14 +248,31 @@ func (u *Updater) doUpdateAsync(info *UpdateInfo) {
 	u.progress.FinishedAt = time.Now().Format(time.RFC3339)
 	u.mu.Unlock()
 
-	// Restart the service
+	// Restart the service (platform-aware)
 	go func() {
 		time.Sleep(1 * time.Second)
-		// Try systemctl first
-		if err := execCmd("systemctl", "restart", "clawpanel"); err != nil {
-			// Fallback: exit and let systemd restart us
-			log.Printf("[Updater] systemctl restart failed: %v, exiting...", err)
+		switch runtime.GOOS {
+		case "windows":
+			// Try Windows service restart
+			if err := execCmd("net", "stop", "ClawPanel"); err == nil {
+				execCmd("net", "start", "ClawPanel")
+				return
+			}
+			// Fallback: exit
+			log.Printf("[Updater] Windows service restart failed, exiting...")
 			os.Exit(0)
+		case "darwin":
+			// macOS: try launchctl, then fallback to exit
+			if err := execCmd("launchctl", "kickstart", "-k", "system/com.clawpanel.service"); err != nil {
+				log.Printf("[Updater] launchctl restart failed: %v, exiting for manual restart...", err)
+				os.Exit(0)
+			}
+		default:
+			// Linux: try systemctl first
+			if err := execCmd("systemctl", "restart", "clawpanel"); err != nil {
+				log.Printf("[Updater] systemctl restart failed: %v, exiting...", err)
+				os.Exit(0)
+			}
 		}
 	}()
 }

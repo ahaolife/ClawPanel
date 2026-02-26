@@ -13,6 +13,7 @@ import CronJobs from './pages/CronJobs';
 import SystemConfig from './pages/SystemConfig';
 import Sessions from './pages/Sessions';
 import Workspace from './pages/Workspace';
+import Plugins from './pages/Plugins';
 
 export default function App() {
   const auth = useAuth();
@@ -36,6 +37,7 @@ export default function App() {
         <Route path="/logs" element={<ActivityLog ws={ws} />} />
         <Route path="/channels" element={<OpenClawRequired configured={!!ws.openclawStatus?.configured}><Channels /></OpenClawRequired>} />
         <Route path="/skills" element={<OpenClawRequired configured={!!ws.openclawStatus?.configured}><Skills /></OpenClawRequired>} />
+        <Route path="/plugins" element={<OpenClawRequired configured={!!ws.openclawStatus?.configured}><Plugins /></OpenClawRequired>} />
         <Route path="/cron" element={<OpenClawRequired configured={!!ws.openclawStatus?.configured}><CronJobs /></OpenClawRequired>} />
         <Route path="/sessions" element={<OpenClawRequired configured={!!ws.openclawStatus?.configured}><Sessions /></OpenClawRequired>} />
         <Route path="/config" element={<SystemConfig />} />

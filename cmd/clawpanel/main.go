@@ -20,6 +20,7 @@ import (
 	"github.com/zhaoxinyi02/ClawPanel/internal/model"
 	"github.com/zhaoxinyi02/ClawPanel/internal/eventlog"
 	"github.com/zhaoxinyi02/ClawPanel/internal/monitor"
+	"github.com/zhaoxinyi02/ClawPanel/internal/plugin"
 	"github.com/zhaoxinyi02/ClawPanel/internal/process"
 	"github.com/zhaoxinyi02/ClawPanel/internal/taskman"
 	"github.com/zhaoxinyi02/ClawPanel/internal/update"
@@ -95,8 +96,11 @@ func runServer(stopCh chan struct{}) {
 	napcatMon.Start()
 	defer napcatMon.Stop()
 
+	// 初始化插件管理器
+	pluginMgr := plugin.NewManager(cfg)
+
 	// 初始化面板自检更新器
-	panelUpdater := update.NewUpdater("v5.0.2", cfg.DataDir)
+	panelUpdater := update.NewUpdater("v5.0.3", cfg.DataDir)
 
 	// 设置 Gin 模式
 	if cfg.Debug {
@@ -178,7 +182,7 @@ func runServer(stopCh chan struct{}) {
 			auth.GET("/system/update-status", handler.UpdateStatus(cfg))
 
 			// ClawPanel 面板自检更新
-			auth.GET("/panel/version", handler.GetPanelVersion("v5.0.2"))
+			auth.GET("/panel/version", handler.GetPanelVersion("v5.0.3"))
 			auth.GET("/panel/check-update", handler.CheckPanelUpdate(panelUpdater))
 			auth.POST("/panel/do-update", handler.DoPanelUpdate(panelUpdater))
 			auth.GET("/panel/update-progress", handler.PanelUpdateProgress(panelUpdater))
@@ -257,6 +261,19 @@ func runServer(stopCh chan struct{}) {
 			auth.GET("/openclaw/config/check", handler.CheckConfig(cfg))
 			auth.POST("/openclaw/config/fix", handler.FixConfig(cfg))
 
+			// 插件中心
+			auth.GET("/plugins/list", handler.GetPluginList(pluginMgr))
+			auth.GET("/plugins/installed", handler.GetInstalledPlugins(pluginMgr))
+			auth.GET("/plugins/:id", handler.GetPluginDetail(pluginMgr))
+			auth.POST("/plugins/registry/refresh", handler.RefreshPluginRegistry(pluginMgr))
+			auth.POST("/plugins/install", handler.InstallPlugin(pluginMgr))
+			auth.DELETE("/plugins/:id", handler.UninstallPlugin(pluginMgr))
+			auth.PUT("/plugins/:id/toggle", handler.TogglePlugin(pluginMgr))
+			auth.GET("/plugins/:id/config", handler.GetPluginConfig(pluginMgr))
+			auth.PUT("/plugins/:id/config", handler.UpdatePluginConfig(pluginMgr))
+			auth.GET("/plugins/:id/logs", handler.GetPluginLogs(pluginMgr))
+			auth.POST("/plugins/:id/update", handler.UpdatePluginVersion(pluginMgr))
+
 			// 软件环境 & 安装任务
 			auth.GET("/software/list", handler.GetSoftwareList(cfg))
 			auth.GET("/software/openclaw-instances", handler.DetectOpenClawInstances(cfg))
@@ -319,7 +336,7 @@ func runServer(stopCh chan struct{}) {
 
 	// 启动服务器
 	addr := fmt.Sprintf("0.0.0.0:%d", cfg.Port)
-	log.Printf("[ClawPanel] v5.0.2 启动中 → http://%s", addr)
+	log.Printf("[ClawPanel] v5.0.3 启动中 → http://%s", addr)
 	log.Printf("[ClawPanel] 数据目录: %s", cfg.DataDir)
 	log.Printf("[ClawPanel] OpenClaw 目录: %s", cfg.OpenClawDir)
 

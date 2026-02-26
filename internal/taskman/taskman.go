@@ -2,10 +2,12 @@ package taskman
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os/exec"
+	"runtime"
 	"sync"
 	"time"
 
@@ -180,14 +182,19 @@ func (m *Manager) RunCommand(task *Task, name string, args ...string) error {
 	return nil
 }
 
-// RunScript 运行 bash 脚本并实时推送输出
+// RunScript 运行脚本并实时推送输出（Windows 用 PowerShell，其他平台用 bash）
 func (m *Manager) RunScript(task *Task, script string) error {
+	if runtime.GOOS == "windows" {
+		return m.RunCommand(task, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)
+	}
 	return m.RunCommand(task, "bash", "-c", script)
 }
 
 // RunScriptWithSudo 使用 sudo 运行脚本
 func (m *Manager) RunScriptWithSudo(task *Task, sudoPass, script string) error {
-	fullScript := fmt.Sprintf("echo '%s' | sudo -S bash -c '%s'", sudoPass, script)
+	// Use base64 encoding to avoid all shell escaping issues (backslash, single/double quotes, etc.)
+	encoded := base64.StdEncoding.EncodeToString([]byte(script))
+	fullScript := fmt.Sprintf("echo '%s' | sudo -S bash -c \"$(echo %s | base64 -d)\"", sudoPass, encoded)
 	return m.RunCommand(task, "bash", "-c", fullScript)
 }
 

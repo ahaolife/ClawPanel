@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -193,4 +194,31 @@ func (c *Config) OpenClawConfigExists() bool {
 	cfgPath := filepath.Join(c.OpenClawDir, "openclaw.json")
 	_, err := os.Stat(cfgPath)
 	return err == nil
+}
+
+// OpenClawInstalled 检查 OpenClaw 是否已安装（配置文件存在 或 二进制可执行）
+// 解决 npm 安装后配置文件尚未生成但二进制已可用的情况
+func (c *Config) OpenClawInstalled() bool {
+	// 1. 配置文件存在
+	if c.OpenClawConfigExists() {
+		return true
+	}
+	// 2. 二进制在 PATH 中可用
+	if p, err := exec.LookPath("openclaw"); err == nil && p != "" {
+		return true
+	}
+	// 3. Windows: 检查 npm 全局目录
+	if runtime.GOOS == "windows" {
+		home, _ := os.UserHomeDir()
+		winPaths := []string{
+			filepath.Join(home, "AppData", "Roaming", "npm", "openclaw.cmd"),
+			filepath.Join(home, "AppData", "Roaming", "npm", "openclaw"),
+		}
+		for _, wp := range winPaths {
+			if _, err := os.Stat(wp); err == nil {
+				return true
+			}
+		}
+	}
+	return false
 }

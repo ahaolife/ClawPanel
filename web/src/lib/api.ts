@@ -175,6 +175,18 @@ const _api = {
   installSoftware: (software: string) => post('/software/install', { software }),
   getTasks: () => get('/tasks'),
   getTaskDetail: (id: string) => get(`/tasks/${id}`),
+  // Plugin Center
+  getPluginList: () => get('/plugins/list'),
+  getInstalledPlugins: () => get('/plugins/installed'),
+  getPluginDetail: (id: string) => get(`/plugins/${id}`),
+  refreshPluginRegistry: () => post('/plugins/registry/refresh'),
+  installPlugin: (pluginId: string, source?: string) => post('/plugins/install', { pluginId, source }),
+  uninstallPlugin: (id: string) => del(`/plugins/${id}`),
+  togglePlugin: (id: string, enabled: boolean) => put(`/plugins/${id}/toggle`, { enabled }),
+  getPluginConfig: (id: string) => get(`/plugins/${id}/config`),
+  updatePluginConfig: (id: string, config: any) => put(`/plugins/${id}/config`, config),
+  getPluginLogs: (id: string) => get(`/plugins/${id}/logs`),
+  updatePluginVersion: (id: string) => post(`/plugins/${id}/update`),
 };
 
 // In demo mode, replace all API calls with mock data

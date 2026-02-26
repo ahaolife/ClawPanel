@@ -1,0 +1,41 @@
+{
+  "id": "hello-world",
+  "name": "Hello World 示例插件",
+  "version": "1.0.0",
+  "author": "ClawPanel Team",
+  "description": "一个最小化的 OpenClaw 插件示例，演示插件基本结构和开发规范",
+  "homepage": "https://github.com/zhaoxinyi02/ClawPanel-Plugins",
+  "license": "MIT",
+  "category": "basic",
+  "tags": ["示例", "入门", "教程"],
+  "icon": "sparkles",
+  "minOpenClaw": "2025.1.0",
+  "minPanel": "v5.0.0",
+  "entryPoint": "index.js",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "greeting": {
+        "type": "string",
+        "title": "问候语",
+        "description": "自定义问候语内容",
+        "default": "你好！我是 OpenClaw 插件 👋"
+      },
+      "trigger": {
+        "type": "string",
+        "title": "触发关键词",
+        "description": "触发插件回复的关键词",
+        "default": "/hello"
+      },
+      "enabled": {
+        "type": "boolean",
+        "title": "启用自动回复",
+        "default": true
+      }
+    }
+  },
+  "permissions": [
+    "message.send",
+    "message.receive"
+  ]
+}

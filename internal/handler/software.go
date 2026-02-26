@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -40,7 +41,23 @@ type OpenClawInstance struct {
 
 func detectCmd(name string, args ...string) string {
 	cmd := exec.Command(name, args...)
-	cmd.Env = append(os.Environ(), "PATH="+os.Getenv("PATH")+":/usr/local/bin:/usr/bin:/bin:/snap/bin")
+	currentPath := os.Getenv("PATH")
+	if runtime.GOOS == "windows" {
+		// Windows: add npm global bin path
+		home, _ := os.UserHomeDir()
+		extraPaths := strings.Join([]string{
+			filepath.Join(home, "AppData", "Roaming", "npm"),
+			filepath.Join(home, ".local", "bin"),
+			`C:\Program Files\nodejs`,
+		}, ";")
+		cmd.Env = append(os.Environ(), "PATH="+currentPath+";"+extraPaths)
+	} else {
+		extraPaths := "/usr/local/bin:/usr/bin:/bin:/snap/bin"
+		if runtime.GOOS == "darwin" {
+			extraPaths += ":/opt/homebrew/bin:/opt/homebrew/sbin"
+		}
+		cmd.Env = append(os.Environ(), "PATH="+currentPath+":"+extraPaths)
+	}
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -114,11 +131,29 @@ func GetSoftwareList(cfg *config.Config) gin.HandlerFunc {
 			Status: boolStatus(ocVer != ""), Category: "service", Icon: "brain",
 		})
 
-		// NapCat (QQ)
-		napcatExists, napcatStatus := getDockerContainerStatus("openclaw-qq")
+		// NapCat (QQ) - detect Docker container OR native Windows Shell install
+		napcatExists := false
+		napcatStatus := "not_installed"
 		napcatVer := ""
-		if napcatExists {
-			napcatVer = "Docker"
+		if runtime.GOOS == "windows" {
+			// Windows: detect NapCat Shell installation
+			napcatDir := getNapCatShellDir(cfg)
+			if napcatDir != "" {
+				napcatExists = true
+				napcatVer = "Shell (Windows)"
+				// Check if napcat process is running
+				if isNapCatShellRunning() {
+					napcatStatus = "running"
+				} else {
+					napcatStatus = "installed"
+				}
+			}
+		} else {
+			// Linux/macOS: detect Docker container
+			napcatExists, napcatStatus = getDockerContainerStatus("openclaw-qq")
+			if napcatExists {
+				napcatVer = "Docker"
+			}
 		}
 		list = append(list, SoftwareInfo{
 			ID: "napcat", Name: "NapCat (QQ个人号)", Description: "QQ 机器人 OneBot11 协议",
@@ -176,11 +211,18 @@ func detectOpenClawVersion(cfg *config.Config) string {
 	}
 
 	// 4. Try common binary paths
+	home, _ := os.UserHomeDir()
 	commonPaths := []string{
 		"/usr/local/bin/openclaw",
 		"/usr/bin/openclaw",
-		filepath.Join(os.Getenv("HOME"), ".local/bin/openclaw"),
-		filepath.Join(os.Getenv("HOME"), ".npm-global/bin/openclaw"),
+		filepath.Join(home, ".local/bin/openclaw"),
+		filepath.Join(home, ".npm-global/bin/openclaw"),
+	}
+	if runtime.GOOS == "windows" {
+		commonPaths = append(commonPaths,
+			filepath.Join(home, "AppData", "Roaming", "npm", "openclaw.cmd"),
+			`C:\Program Files\nodejs\openclaw.cmd`,
+		)
 	}
 	for _, p := range commonPaths {
 		if _, err := os.Stat(p); err == nil {
@@ -260,13 +302,34 @@ func DetectOpenClawInstances(cfg *config.Config) gin.HandlerFunc {
 		var instances []OpenClawInstance
 
 		// 1. npm global install
-		npmPath := detectCmd("which", "openclaw")
+		var npmPath string
+		if runtime.GOOS == "windows" {
+			npmPath = detectCmd("where", "openclaw")
+			// 'where' may return multiple lines, take the first
+			if idx := strings.Index(npmPath, "\n"); idx > 0 {
+				npmPath = strings.TrimSpace(npmPath[:idx])
+			}
+		} else {
+			npmPath = detectCmd("which", "openclaw")
+		}
 		if npmPath != "" {
 			ver := detectCmd("openclaw", "--version")
 			instances = append(instances, OpenClawInstance{
 				ID: "npm-global", Type: "npm", Label: "npm 全局安装",
 				Version: ver, Path: npmPath, Active: true, Status: "installed",
 			})
+		}
+		// Windows: also check npm global dir directly
+		if runtime.GOOS == "windows" && npmPath == "" {
+			home, _ := os.UserHomeDir()
+			winNpmPath := filepath.Join(home, "AppData", "Roaming", "npm", "openclaw.cmd")
+			if _, err := os.Stat(winNpmPath); err == nil {
+				ver := detectCmd("openclaw", "--version")
+				instances = append(instances, OpenClawInstance{
+					ID: "npm-global", Type: "npm", Label: "npm 全局安装",
+					Version: ver, Path: winNpmPath, Active: true, Status: "installed",
+				})
+			}
 		}
 
 		// 2. systemd service
@@ -362,38 +425,121 @@ func InstallSoftware(cfg *config.Config, tm *taskman.Manager) gin.HandlerFunc {
 		switch req.Software {
 		case "nodejs":
 			taskName = "安装 Node.js"
-			script = `
+			if runtime.GOOS == "windows" {
+				script = `
+$ErrorActionPreference = "Stop"
+Write-Output "📦 安装 Node.js (v22 LTS)..."
+$nodeCheck = Get-Command node -ErrorAction SilentlyContinue
+if ($nodeCheck) {
+  Write-Output "⚠️ Node.js 已安装: $(node --version)"
+  Write-Output "如需更新，请从 https://nodejs.org 下载最新版"
+  npm config set registry https://registry.npmmirror.com
+  exit 0
+}
+# Check if winget is available
+$wingetCheck = Get-Command winget -ErrorAction SilentlyContinue
+if ($wingetCheck) {
+  Write-Output "📥 通过 winget 安装 Node.js..."
+  winget install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
+} else {
+  Write-Output "❌ 请从 https://nodejs.org 手动下载安装 Node.js"
+  Write-Output "或安装 winget (App Installer) 后重试"
+  exit 1
+}
+# Refresh PATH
+$env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH","User")
+npm config set registry https://registry.npmmirror.com
+Write-Output "✅ Node.js $(node --version) 安装完成"
+`
+			} else {
+				script = `
 set -e
 echo "📦 安装 Node.js (v22 LTS)..."
 if command -v node &>/dev/null; then
   echo "⚠️ Node.js 已安装: $(node --version)"
   echo "正在更新..."
 fi
-# Use NodeSource for China-friendly install
-curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-apt-get install -y nodejs
+if [ "$(uname)" = "Darwin" ]; then
+  # macOS: use Homebrew
+  if ! command -v brew &>/dev/null; then
+    echo "❌ macOS 需要先安装 Homebrew: https://brew.sh"
+    exit 1
+  fi
+  brew install node@22 || brew upgrade node@22 || true
+  brew link --overwrite node@22 || true
+elif command -v apt-get &>/dev/null; then
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  apt-get install -y nodejs
+elif command -v yum &>/dev/null; then
+  curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+  yum install -y nodejs
+else
+  echo "❌ 不支持的包管理器，请手动安装 Node.js"
+  exit 1
+fi
 # Set npm mirror
 npm config set registry https://registry.npmmirror.com
 echo "✅ Node.js $(node --version) 安装完成"
 echo "✅ npm $(npm --version)"
 `
+			}
 		case "docker":
 			taskName = "安装 Docker"
-			script = `
+			if runtime.GOOS == "windows" {
+				script = `
+$ErrorActionPreference = "Stop"
+Write-Output "📦 安装 Docker Desktop..."
+$dockerCheck = Get-Command docker -ErrorAction SilentlyContinue
+if ($dockerCheck) {
+  Write-Output "⚠️ Docker 已安装: $(docker --version)"
+  exit 0
+}
+$wingetCheck = Get-Command winget -ErrorAction SilentlyContinue
+if ($wingetCheck) {
+  Write-Output "📥 通过 winget 安装 Docker Desktop..."
+  winget install Docker.DockerDesktop --accept-source-agreements --accept-package-agreements
+  Write-Output "✅ Docker Desktop 已安装，请重启电脑后启动 Docker Desktop"
+} else {
+  Write-Output "❌ 请从 https://www.docker.com/products/docker-desktop 手动下载安装 Docker Desktop"
+  exit 1
+}
+`
+			} else {
+				script = `
 set -e
 echo "📦 安装 Docker..."
 if command -v docker &>/dev/null; then
   echo "⚠️ Docker 已安装: $(docker --version)"
   exit 0
 fi
-# Use Aliyun mirror
-curl -fsSL https://mirrors.aliyun.com/docker-ce/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg 2>/dev/null || true
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://mirrors.aliyun.com/docker-ce/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
-apt-get update
-apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-# Configure Docker mirror
-mkdir -p /etc/docker
-cat > /etc/docker/daemon.json << 'DOCKEREOF'
+if [ "$(uname)" = "Darwin" ]; then
+  echo "⚠️ macOS 请手动安装 Docker Desktop: https://www.docker.com/products/docker-desktop"
+  echo "或使用 Homebrew: brew install --cask docker"
+  if command -v brew &>/dev/null; then
+    brew install --cask docker
+    echo "✅ Docker Desktop 已安装，请从应用程序中启动"
+  else
+    exit 1
+  fi
+elif command -v apt-get &>/dev/null; then
+  # Debian/Ubuntu
+  curl -fsSL https://mirrors.aliyun.com/docker-ce/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg 2>/dev/null || true
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://mirrors.aliyun.com/docker-ce/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+  apt-get update
+  apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+elif command -v yum &>/dev/null; then
+  # CentOS/RHEL
+  yum install -y yum-utils
+  yum-config-manager --add-repo https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+  yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+else
+  echo "❌ 不支持的系统，请手动安装 Docker"
+  exit 1
+fi
+# Configure Docker mirror (Linux only)
+if [ "$(uname)" != "Darwin" ]; then
+  mkdir -p /etc/docker
+  cat > /etc/docker/daemon.json << 'DOCKEREOF'
 {
   "registry-mirrors": [
     "https://docker.1ms.run",
@@ -401,33 +547,121 @@ cat > /etc/docker/daemon.json << 'DOCKEREOF'
   ]
 }
 DOCKEREOF
-systemctl enable docker
-systemctl restart docker
+  systemctl enable docker
+  systemctl restart docker
+fi
 echo "✅ Docker $(docker --version) 安装完成"
 `
+			}
 		case "git":
 			taskName = "安装 Git"
-			script = `
+			if runtime.GOOS == "windows" {
+				script = `
+$ErrorActionPreference = "Stop"
+Write-Output "📦 安装 Git..."
+$gitCheck = Get-Command git -ErrorAction SilentlyContinue
+if ($gitCheck) {
+  Write-Output "⚠️ Git 已安装: $(git --version)"
+  exit 0
+}
+$wingetCheck = Get-Command winget -ErrorAction SilentlyContinue
+if ($wingetCheck) {
+  Write-Output "📥 通过 winget 安装 Git..."
+  winget install Git.Git --accept-source-agreements --accept-package-agreements
+  Write-Output "✅ Git 安装完成，请重启终端使 git 命令生效"
+} else {
+  Write-Output "❌ 请从 https://git-scm.com/download/win 手动下载安装 Git"
+  exit 1
+}
+`
+			} else {
+				script = `
 set -e
 echo "📦 安装 Git..."
-apt-get update
-apt-get install -y git
+if [ "$(uname)" = "Darwin" ]; then
+  if command -v brew &>/dev/null; then
+    brew install git
+  else
+    xcode-select --install 2>/dev/null || echo "Git 应该已通过 Xcode CLT 安装"
+  fi
+elif command -v apt-get &>/dev/null; then
+  apt-get update
+  apt-get install -y git
+elif command -v yum &>/dev/null; then
+  yum install -y git
+else
+  echo "❌ 不支持的包管理器，请手动安装 Git"
+  exit 1
+fi
 echo "✅ $(git --version) 安装完成"
 `
+			}
 		case "python":
 			taskName = "安装 Python 3"
-			script = `
+			if runtime.GOOS == "windows" {
+				script = `
+$ErrorActionPreference = "Stop"
+Write-Output "📦 安装 Python 3..."
+$pyCheck = Get-Command python -ErrorAction SilentlyContinue
+if ($pyCheck) {
+  Write-Output "⚠️ Python 已安装: $(python --version)"
+  exit 0
+}
+$wingetCheck = Get-Command winget -ErrorAction SilentlyContinue
+if ($wingetCheck) {
+  Write-Output "📥 通过 winget 安装 Python 3..."
+  winget install Python.Python.3.12 --accept-source-agreements --accept-package-agreements
+  Write-Output "✅ Python 安装完成，请重启终端"
+} else {
+  Write-Output "❌ 请从 https://www.python.org/downloads/ 手动下载安装 Python"
+  exit 1
+}
+`
+			} else {
+				script = `
 set -e
 echo "📦 安装 Python 3..."
-apt-get update
-apt-get install -y python3 python3-pip python3-venv
+if [ "$(uname)" = "Darwin" ]; then
+  if command -v brew &>/dev/null; then
+    brew install python@3
+  else
+    echo "❌ macOS 请先安装 Homebrew 或从 python.org 下载"
+    exit 1
+  fi
+elif command -v apt-get &>/dev/null; then
+  apt-get update
+  apt-get install -y python3 python3-pip python3-venv
+elif command -v yum &>/dev/null; then
+  yum install -y python3 python3-pip
+else
+  echo "❌ 不支持的包管理器，请手动安装 Python 3"
+  exit 1
+fi
 # Set pip mirror
 pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple 2>/dev/null || true
 echo "✅ $(python3 --version) 安装完成"
 `
+			}
 		case "openclaw":
 			taskName = "安装 OpenClaw"
-			script = `
+			if runtime.GOOS == "windows" {
+				script = `
+$ErrorActionPreference = "Stop"
+Write-Output "📦 安装 OpenClaw..."
+$nodeCheck = Get-Command node -ErrorAction SilentlyContinue
+if (-not $nodeCheck) {
+  Write-Output "❌ 需要先安装 Node.js"
+  exit 1
+}
+Write-Output "📥 正在通过 npm 安装 OpenClaw..."
+npm install -g openclaw@latest --registry=https://registry.npmmirror.com
+Write-Output "✅ OpenClaw 安装完成"
+Write-Output "📝 初始化配置..."
+try { openclaw init } catch { Write-Output "初始化跳过（可能已存在配置）" }
+Write-Output "✅ 全部完成"
+`
+			} else {
+				script = `
 set -e
 echo "📦 安装 OpenClaw..."
 if ! command -v node &>/dev/null; then
@@ -439,9 +673,14 @@ echo "✅ OpenClaw $(openclaw --version) 安装完成"
 echo "📝 初始化配置..."
 openclaw init 2>/dev/null || true
 `
+			}
 		case "napcat":
 			taskName = "安装 NapCat (QQ个人号)"
-			script = buildNapCatInstallScript(cfg)
+			if runtime.GOOS == "windows" {
+				script = buildNapCatWindowsInstallScript(cfg)
+			} else {
+				script = buildNapCatInstallScript(cfg)
+			}
 
 		case "wechat":
 			taskName = "安装微信机器人"
@@ -587,6 +826,150 @@ WUEOF'
 echo "✅ NapCat (QQ个人号) 安装完成"
 echo "📝 请在通道管理中配置 QQ 并扫码登录"
 `, cfg.OpenClawDir, cfg.OpenClawWork)
+}
+
+// getNapCatShellDir returns the NapCat Shell installation directory on Windows, or "" if not found
+func getNapCatShellDir(cfg *config.Config) string {
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(cfg.DataDir, "napcat"),
+		filepath.Join(home, "NapCat"),
+		filepath.Join(home, "Desktop", "NapCat"),
+		`C:\NapCat`,
+		filepath.Join(home, "AppData", "Local", "NapCat"),
+	}
+	for _, dir := range candidates {
+		// Check for napcat.bat or NapCatWinBootMain.exe
+		if _, err := os.Stat(filepath.Join(dir, "napcat.bat")); err == nil {
+			return dir
+		}
+		if _, err := os.Stat(filepath.Join(dir, "NapCatWinBootMain.exe")); err == nil {
+			return dir
+		}
+		// Check for nested NapCat.XXXX.Shell subdirectory
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			if e.IsDir() && strings.Contains(e.Name(), "NapCat") && strings.Contains(e.Name(), "Shell") {
+				subDir := filepath.Join(dir, e.Name())
+				if _, err := os.Stat(filepath.Join(subDir, "napcat.bat")); err == nil {
+					return subDir
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// isNapCatShellRunning checks if a NapCat Shell process is running on Windows
+func isNapCatShellRunning() bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	out := detectCmd("tasklist", "/FI", "IMAGENAME eq NapCatWinBootMain.exe", "/NH")
+	if strings.Contains(out, "NapCatWinBootMain") {
+		return true
+	}
+	// Also check for napcat.exe process
+	out2 := detectCmd("tasklist", "/FI", "IMAGENAME eq napcat.exe", "/NH")
+	return strings.Contains(out2, "napcat.exe")
+}
+
+// buildNapCatWindowsInstallScript builds a PowerShell script to install NapCat Shell on Windows
+func buildNapCatWindowsInstallScript(cfg *config.Config) string {
+	installDir := filepath.Join(cfg.DataDir, "napcat")
+	// Use forward slashes in PowerShell or properly escaped backslashes
+	installDirPS := strings.ReplaceAll(installDir, `\`, `\\`)
+	return fmt.Sprintf(`
+set -e
+echo "📦 安装 NapCat (QQ个人号) Windows Shell 版本..."
+echo "无需 Docker，直接运行 NapCat Shell"
+
+INSTALL_DIR="%s"
+mkdir -p "$INSTALL_DIR"
+
+echo "📥 下载 NapCat Shell Windows OneKey 版..."
+NAPCAT_URL="https://github.com/NapNeko/NapCatQQ/releases/latest/download/NapCat.Shell.Windows.OneKey.zip"
+NAPCAT_ZIP="$INSTALL_DIR/napcat-onekey.zip"
+
+# Try GitHub first, then mirror
+if ! curl -fSL --connect-timeout 30 -o "$NAPCAT_ZIP" "$NAPCAT_URL" 2>/dev/null; then
+  echo "⚠️ GitHub 下载失败，尝试镜像..."
+  NAPCAT_URL="https://ghfast.top/https://github.com/NapNeko/NapCatQQ/releases/latest/download/NapCat.Shell.Windows.OneKey.zip"
+  curl -fSL --connect-timeout 30 -o "$NAPCAT_ZIP" "$NAPCAT_URL"
+fi
+
+echo "📦 解压 NapCat Shell..."
+cd "$INSTALL_DIR"
+if command -v unzip &>/dev/null; then
+  unzip -o "$NAPCAT_ZIP" -d "$INSTALL_DIR"
+elif command -v powershell &>/dev/null; then
+  powershell -Command "Expand-Archive -Force -Path '$NAPCAT_ZIP' -DestinationPath '$INSTALL_DIR'"
+else
+  echo "❌ 需要 unzip 或 powershell 来解压文件"
+  exit 1
+fi
+
+rm -f "$NAPCAT_ZIP"
+
+echo "🔧 配置 OneBot11 (WS + HTTP)..."
+# Find the NapCat Shell directory (could be nested)
+NAPCAT_SHELL_DIR=$(find "$INSTALL_DIR" -name "napcat.bat" -exec dirname {} \; 2>/dev/null | head -1)
+if [ -z "$NAPCAT_SHELL_DIR" ]; then
+  NAPCAT_SHELL_DIR=$(find "$INSTALL_DIR" -name "NapCatWinBootMain.exe" -exec dirname {} \; 2>/dev/null | head -1)
+fi
+
+if [ -n "$NAPCAT_SHELL_DIR" ]; then
+  mkdir -p "$NAPCAT_SHELL_DIR/config"
+  cat > "$NAPCAT_SHELL_DIR/config/onebot11.json" << 'OBEOF'
+{
+  "network": {
+    "websocketServers": [{
+      "name": "ws-server",
+      "enable": true,
+      "host": "0.0.0.0",
+      "port": 3001,
+      "token": "",
+      "reportSelfMessage": true,
+      "enableForcePushEvent": true,
+      "messagePostFormat": "array",
+      "debug": false,
+      "heartInterval": 30000
+    }],
+    "httpServers": [{
+      "name": "http-api",
+      "enable": true,
+      "host": "0.0.0.0",
+      "port": 3000,
+      "token": ""
+    }],
+    "httpSseServers": [],
+    "httpClients": [],
+    "websocketClients": [],
+    "plugins": []
+  },
+  "musicSignUrl": "",
+  "enableLocalFile2Url": true,
+  "parseMultMsg": true,
+  "imageDownloadProxy": ""
+}
+OBEOF
+
+  cat > "$NAPCAT_SHELL_DIR/config/webui.json" << 'WUEOF'
+{
+  "host": "0.0.0.0",
+  "port": 6099,
+  "token": "clawpanel-qq",
+  "loginRate": 3
+}
+WUEOF
+
+  echo "✅ NapCat Shell (Windows) 安装完成"
+  echo "📁 安装目录: $NAPCAT_SHELL_DIR"
+  echo "📝 请在通道管理中配置 QQ 并扫码登录"
+else
+  echo "⚠️ NapCat 已下载但未找到启动文件，请手动检查: $INSTALL_DIR"
+fi
+`, installDirPS)
 }
 
 func buildWeChatInstallScript(cfg *config.Config) string {

@@ -8,7 +8,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -172,7 +175,7 @@ func (m *NapCatMonitor) checkAndUpdate() {
 	}
 	m.mu.RUnlock()
 
-	containerRunning := isContainerRunning("openclaw-qq")
+	containerRunning := isNapCatProcessRunning()
 	wsConnected := isPortReachable(3001)
 	httpAvailable := isPortReachable(3000)
 	qqLoggedIn := false
@@ -296,9 +299,8 @@ func (m *NapCatMonitor) doReconnect(reason string) error {
 		Reason: reason,
 	}
 
-	// Restart the Docker container
-	cmd := exec.Command("docker", "restart", "openclaw-qq")
-	out, err := cmd.CombinedOutput()
+	// Restart NapCat (Docker on Linux/macOS, Shell process on Windows)
+	out, err := restartNapCatPlatform(m.cfg)
 
 	if err != nil {
 		rlog.Success = false
@@ -397,6 +399,93 @@ func (m *NapCatMonitor) broadcastStatus() {
 func isContainerRunning(name string) bool {
 	out, err := exec.Command("docker", "inspect", "--format", "{{.State.Running}}", name).Output()
 	return err == nil && strings.TrimSpace(string(out)) == "true"
+}
+
+// isNapCatProcessRunning checks if NapCat is running, platform-aware
+func isNapCatProcessRunning() bool {
+	if runtime.GOOS == "windows" {
+		// Check for NapCat Shell process on Windows
+		out, err := exec.Command("tasklist", "/FI", "IMAGENAME eq NapCatWinBootMain.exe", "/NH").Output()
+		if err == nil && strings.Contains(string(out), "NapCatWinBootMain") {
+			return true
+		}
+		out2, err := exec.Command("tasklist", "/FI", "IMAGENAME eq napcat.exe", "/NH").Output()
+		if err == nil && strings.Contains(string(out2), "napcat.exe") {
+			return true
+		}
+		return false
+	}
+	return isContainerRunning("openclaw-qq")
+}
+
+// restartNapCatPlatform restarts NapCat based on platform
+func restartNapCatPlatform(cfg *config.Config) ([]byte, error) {
+	if runtime.GOOS == "windows" {
+		// Kill NapCat processes
+		exec.Command("taskkill", "/F", "/IM", "NapCatWinBootMain.exe").Run()
+		exec.Command("taskkill", "/F", "/IM", "napcat.exe").Run()
+		exec.Command("taskkill", "/F", "/IM", "QQ.exe").Run()
+		time.Sleep(2 * time.Second)
+		// Find and restart NapCat Shell
+		napcatDir := findNapCatShellDir(cfg)
+		if napcatDir == "" {
+			return []byte("NapCat Shell directory not found"), fmt.Errorf("NapCat Shell not installed")
+		}
+		batPath := filepath.Join(napcatDir, "napcat.bat")
+		if _, err := os.Stat(batPath); err == nil {
+			cmd := exec.Command("cmd", "/C", "start", "/B", batPath)
+			cmd.Dir = napcatDir
+			err := cmd.Start()
+			if err != nil {
+				return []byte(err.Error()), err
+			}
+			return []byte("NapCat Shell restarted"), nil
+		}
+		exePath := filepath.Join(napcatDir, "NapCatWinBootMain.exe")
+		if _, err := os.Stat(exePath); err == nil {
+			cmd := exec.Command(exePath)
+			cmd.Dir = napcatDir
+			err := cmd.Start()
+			if err != nil {
+				return []byte(err.Error()), err
+			}
+			return []byte("NapCat Shell restarted"), nil
+		}
+		return []byte("No napcat.bat or NapCatWinBootMain.exe found"), fmt.Errorf("NapCat executable not found")
+	}
+	// Linux/macOS: Docker
+	cmd := exec.Command("docker", "restart", "openclaw-qq")
+	return cmd.CombinedOutput()
+}
+
+// findNapCatShellDir finds the NapCat Shell installation directory on Windows
+func findNapCatShellDir(cfg *config.Config) string {
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(cfg.DataDir, "napcat"),
+		filepath.Join(home, "NapCat"),
+		filepath.Join(home, "Desktop", "NapCat"),
+		`C:\NapCat`,
+		filepath.Join(home, "AppData", "Local", "NapCat"),
+	}
+	for _, dir := range candidates {
+		if _, err := os.Stat(filepath.Join(dir, "napcat.bat")); err == nil {
+			return dir
+		}
+		if _, err := os.Stat(filepath.Join(dir, "NapCatWinBootMain.exe")); err == nil {
+			return dir
+		}
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			if e.IsDir() && strings.Contains(e.Name(), "NapCat") && strings.Contains(e.Name(), "Shell") {
+				subDir := filepath.Join(dir, e.Name())
+				if _, err := os.Stat(filepath.Join(subDir, "napcat.bat")); err == nil {
+					return subDir
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func isPortReachable(port int) bool {

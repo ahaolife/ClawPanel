@@ -1,0 +1,27 @@
+{
+  "version": "1.0.0",
+  "updatedAt": "2025-01-01T00:00:00Z",
+  "plugins": [
+    {
+      "id": "hello-world",
+      "name": "Hello World 示例插件",
+      "version": "1.0.0",
+      "author": "ClawPanel Team",
+      "description": "一个最小化的 OpenClaw 插件示例，演示插件基本结构和开发规范",
+      "homepage": "https://github.com/zhaoxinyi02/ClawPanel-Plugins",
+      "repository": "https://github.com/zhaoxinyi02/ClawPanel-Plugins",
+      "license": "MIT",
+      "category": "basic",
+      "tags": ["示例", "入门", "教程"],
+      "icon": "sparkles",
+      "minOpenClaw": "2025.1.0",
+      "minPanel": "v5.0.0",
+      "gitUrl": "https://github.com/zhaoxinyi02/ClawPanel-Plugins.git",
+      "downloadUrl": "",
+      "downloads": 0,
+      "stars": 0,
+      "screenshot": "",
+      "readme": "# Hello World 插件\n\n这是一个最小化的 OpenClaw 插件示例。"
+    }
+  ]
+}

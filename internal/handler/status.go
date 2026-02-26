@@ -150,7 +150,7 @@ func GetStatus(db *sql.DB, cfg *config.Config, procMgr *process.Manager) gin.Han
 		c.JSON(http.StatusOK, gin.H{
 			"ok": true,
 			"openclaw": gin.H{
-				"configured":      cfg.OpenClawConfigExists(),
+				"configured":      cfg.OpenClawInstalled(),
 				"currentModel":    currentModel,
 				"enabledChannels": channels,
 			},

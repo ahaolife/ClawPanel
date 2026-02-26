@@ -1,0 +1,108 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://clawpanel.dev/schemas/plugin.json",
+  "title": "OpenClaw Plugin Manifest",
+  "description": "OpenClaw 插件 plugin.json 的 JSON Schema 定义",
+  "type": "object",
+  "required": ["id", "name", "version", "author", "description"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$",
+      "minLength": 2,
+      "maxLength": 64,
+      "description": "插件唯一标识符，全小写，使用连字符分隔"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "description": "插件显示名称，支持中文"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+",
+      "description": "语义化版本号，如 1.0.0"
+    },
+    "author": {
+      "type": "string",
+      "minLength": 1,
+      "description": "插件作者名"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "插件功能的一句话描述"
+    },
+    "homepage": {
+      "type": "string",
+      "format": "uri",
+      "description": "插件主页 URL"
+    },
+    "repository": {
+      "type": "string",
+      "description": "Git 仓库地址"
+    },
+    "license": {
+      "type": "string",
+      "description": "开源许可证，推荐 MIT"
+    },
+    "category": {
+      "type": "string",
+      "enum": ["basic", "ai", "message", "fun", "tool"],
+      "description": "插件分类"
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "maxItems": 10,
+      "description": "标签数组，用于搜索"
+    },
+    "icon": {
+      "type": "string",
+      "description": "Lucide 图标名称，如 brain, sparkles, message-circle"
+    },
+    "minOpenClaw": {
+      "type": "string",
+      "description": "最低 OpenClaw 版本要求"
+    },
+    "minPanel": {
+      "type": "string",
+      "description": "最低 ClawPanel 版本要求"
+    },
+    "entryPoint": {
+      "type": "string",
+      "default": "index.js",
+      "description": "插件入口文件路径"
+    },
+    "configSchema": {
+      "type": "object",
+      "description": "插件配置的 JSON Schema 定义，用于自动生成前端表单"
+    },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "npm 依赖，格式同 package.json dependencies"
+    },
+    "permissions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "message.send",
+          "message.receive",
+          "config.read",
+          "config.write",
+          "http.request",
+          "file.read",
+          "file.write",
+          "process.exec",
+          "task.create",
+          "task.notify"
+        ]
+      },
+      "description": "插件所需权限列表"
+    }
+  },
+  "additionalProperties": false
+}
