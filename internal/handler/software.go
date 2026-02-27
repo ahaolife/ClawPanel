@@ -729,14 +729,45 @@ Write-Output "✅ 全部完成"
 				script = `
 set -e
 echo "📦 安装 OpenClaw..."
+
+# 1. Auto-install Node.js if missing
 if ! command -v node &>/dev/null; then
-  echo "❌ 需要先安装 Node.js"
-  exit 1
+  echo "⚠️ 未检测到 Node.js，正在自动安装 Node.js v22 LTS..."
+  if [ "$(uname)" = "Darwin" ]; then
+    if ! command -v brew &>/dev/null; then
+      echo "❌ macOS 需要先安装 Homebrew: https://brew.sh"
+      exit 1
+    fi
+    brew install node@22 || brew upgrade node@22 || true
+    brew link --overwrite node@22 || true
+  elif command -v apt-get &>/dev/null; then
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    apt-get install -y nodejs
+  elif command -v yum &>/dev/null; then
+    curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+    yum install -y nodejs
+  elif command -v dnf &>/dev/null; then
+    curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+    dnf install -y nodejs
+  else
+    echo "❌ 不支持的包管理器，请手动安装 Node.js 后重试"
+    exit 1
+  fi
+  echo "✅ Node.js $(node --version) 安装完成"
 fi
+
+# 2. Ensure npm mirror is set
+npm config set registry https://registry.npmmirror.com 2>/dev/null || true
+
+# 3. Install OpenClaw
+echo "📥 正在通过 npm 安装 OpenClaw..."
 npm install -g openclaw@latest --registry=https://registry.npmmirror.com
-echo "✅ OpenClaw $(openclaw --version) 安装完成"
+echo "✅ OpenClaw $(openclaw --version 2>/dev/null || echo '已安装') 安装完成"
+
+# 4. Initialize config
 echo "📝 初始化配置..."
 openclaw init 2>/dev/null || true
+echo "✅ 全部完成"
 `
 			}
 		case "napcat":
@@ -760,8 +791,8 @@ openclaw init 2>/dev/null || true
 
 		go func() {
 			var err error
-			if sudoPass != "" && req.Software != "openclaw" {
-				// Most installs need sudo
+			if sudoPass != "" && runtime.GOOS != "windows" {
+				// Linux/macOS installs need sudo (including OpenClaw which auto-installs Node.js)
 				err = tm.RunScriptWithSudo(task, sudoPass, script)
 			} else {
 				err = tm.RunScript(task, script)
