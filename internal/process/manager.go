@@ -219,7 +219,7 @@ func (m *Manager) addLogLine(line string) {
 	}
 }
 
-// waitForExit 等待进程退出
+// waitForExit 等待进程退出，异常退出时自动重启
 func (m *Manager) waitForExit() {
 	if m.logReader != nil {
 		scanner := bufio.NewScanner(m.logReader)
@@ -232,14 +232,29 @@ func (m *Manager) waitForExit() {
 	if m.cmd != nil {
 		err := m.cmd.Wait()
 		m.mu.Lock()
+		wasRunning := m.status.Running
 		m.status.Running = false
+		exitCode := 0
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
-				m.status.ExitCode = exitErr.ExitCode()
+				exitCode = exitErr.ExitCode()
+				m.status.ExitCode = exitCode
 			}
 		}
 		m.mu.Unlock()
-		log.Printf("[ProcessMgr] OpenClaw 进程已退出 (code: %d)", m.status.ExitCode)
+		log.Printf("[ProcessMgr] OpenClaw 进程已退出 (code: %d)", exitCode)
+
+		// 如果进程是在"运行中"状态异常退出（非手动 Stop），自动重启
+		// OpenClaw 的 SIGUSR1 自重启机制会杀掉自身，期望外部 supervisor 重拉
+		if wasRunning && exitCode != 0 {
+			log.Println("[ProcessMgr] 检测到 OpenClaw 异常退出，3秒后自动重启...")
+			time.Sleep(3 * time.Second)
+			if err := m.Start(); err != nil {
+				log.Printf("[ProcessMgr] 自动重启失败: %v", err)
+			} else {
+				log.Println("[ProcessMgr] OpenClaw 已自动重启")
+			}
+		}
 	}
 }
 
