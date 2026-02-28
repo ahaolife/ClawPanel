@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/zhaoxinyi02/ClawPanel/internal/config"
+	"github.com/zhaoxinyi02/ClawPanel/internal/process"
 )
 
 // DiagnoseStep represents one step in the diagnosis/repair process
@@ -33,7 +35,7 @@ type DiagnoseResult struct {
 }
 
 // DiagnoseNapCat runs a full diagnosis and optional repair of NapCat
-func DiagnoseNapCat(cfg *config.Config) gin.HandlerFunc {
+func DiagnoseNapCat(cfg *config.Config, procMgr ...*process.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req struct {
 			Repair bool `json:"repair"`
@@ -47,6 +49,27 @@ func DiagnoseNapCat(cfg *config.Config) gin.HandlerFunc {
 			steps = diagnoseNapCatWindows(cfg, repair)
 		} else {
 			steps = diagnoseNapCatLinux(cfg, repair)
+		}
+
+		// If channel.ts was fixed, auto-restart OpenClaw so the fix takes effect
+		if repair && len(procMgr) > 0 && procMgr[0] != nil {
+			for _, s := range steps {
+				if s.Step == "QQ 插件 startAccount 检测" && s.Status == "fixed" {
+					log.Println("[Diagnose] channel.ts 已修复，自动重启 OpenClaw...")
+					if err := procMgr[0].Restart(); err != nil {
+						steps = append(steps, DiagnoseStep{
+							Step: "重启 OpenClaw", Status: "error",
+							Message: "OpenClaw 自动重启失败: " + err.Error(),
+						})
+					} else {
+						steps = append(steps, DiagnoseStep{
+							Step: "重启 OpenClaw", Status: "ok",
+							Message: "已自动重启 OpenClaw 使 channel.ts 修复生效",
+						})
+					}
+					break
+				}
+			}
 		}
 
 		// Build summary

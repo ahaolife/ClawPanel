@@ -319,7 +319,7 @@ func napcatApiCall(cfg *config.Config, method, path string, body interface{}) (m
 	cred := napcatAuth(cfg)
 	r, err := napcatProxy(method, path, body, cred)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("NapCat 服务不可达，可能正在启动中，请稍候重试")
 	}
 	// If unauthorized, clear cache and retry with fresh auth
 	if isNapcatUnauthorized(r) {
@@ -328,6 +328,8 @@ func napcatApiCall(cfg *config.Config, method, path string, body interface{}) (m
 		if cred != "" {
 			return napcatProxy(method, path, body, cred)
 		}
+		// Auth still fails — NapCat may be restarting, return friendly message
+		return nil, fmt.Errorf("NapCat 认证失败，服务可能正在重启中，请等待几秒后重试")
 	}
 	return r, nil
 }
@@ -346,7 +348,18 @@ func NapcatLoginStatus(cfg *config.Config) gin.HandlerFunc {
 
 func NapcatGetQRCode(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		r, err := napcatApiCall(cfg, "POST", "/api/QQLogin/GetQQLoginQrcode", nil)
+		// Retry up to 5 times (total ~10s) to wait for NapCat to become ready
+		var r map[string]interface{}
+		var err error
+		for i := 0; i < 5; i++ {
+			r, err = napcatApiCall(cfg, "POST", "/api/QQLogin/GetQQLoginQrcode", nil)
+			if err == nil {
+				break
+			}
+			// NapCat not ready yet, wait and retry
+			time.Sleep(2 * time.Second)
+			napcatCredential = "" // clear stale credential
+		}
 		if err != nil {
 			c.JSON(200, gin.H{"ok": false, "error": err.Error()})
 			return

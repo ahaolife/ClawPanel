@@ -240,7 +240,7 @@ func runServer(stopCh chan struct{}) {
 			auth.GET("/napcat/reconnect-logs", handler.GetNapCatReconnectLogs(napcatMon))
 			auth.POST("/napcat/reconnect", handler.NapCatReconnect(napcatMon))
 			auth.PUT("/napcat/monitor-config", handler.NapCatMonitorConfig(napcatMon))
-			auth.POST("/napcat/diagnose", handler.DiagnoseNapCat(cfg))
+			auth.POST("/napcat/diagnose", handler.DiagnoseNapCat(cfg, procMgr))
 
 			// 系统诊断
 			auth.GET("/system/diagnose", handler.SystemDiagnose(cfg))
