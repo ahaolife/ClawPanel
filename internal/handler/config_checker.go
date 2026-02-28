@@ -337,6 +337,30 @@ func checkNapCatWebUI(cfg *config.Config) ([]ConfigIssue, int) {
 		})
 	}
 
+	// Check token consistency with Docker WEBUI_TOKEN env (Linux only)
+	if runtime.GOOS != "windows" && token != "" {
+		checked++
+		envOut, envErr := exec.Command("docker", "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", "openclaw-qq").Output()
+		if envErr == nil {
+			dockerEnvToken := ""
+			for _, line := range strings.Split(string(envOut), "\n") {
+				if strings.HasPrefix(line, "WEBUI_TOKEN=") {
+					dockerEnvToken = strings.TrimPrefix(line, "WEBUI_TOKEN=")
+					break
+				}
+			}
+			if dockerEnvToken != "" && dockerEnvToken != token {
+				issues = append(issues, ConfigIssue{
+					ID: "napcat-webui-token-mismatch", Severity: "error", Component: "napcat",
+					Title: "WebUI Token 与 Docker 环境变量不一致",
+					Description: fmt.Sprintf("webui.json token=\"%s\" 与 Docker WEBUI_TOKEN=\"%s\" 不一致，会导致扫码登录 Unauthorized 错误", token, dockerEnvToken),
+					Fixable: true, CurrentVal: token, ExpectedVal: dockerEnvToken,
+					FilePath: filePath,
+				})
+			}
+		}
+	}
+
 	return issues, checked
 }
 
@@ -506,6 +530,9 @@ func fixIssue(issueID string, cfg *config.Config) error {
 	case issueID == "napcat-webui-no-token":
 		return fixNapCatWebUIToken(cfg)
 
+	case issueID == "napcat-webui-token-mismatch":
+		return fixNapCatWebUITokenMismatch(cfg)
+
 	default:
 		return fmt.Errorf("该问题不支持自动修复")
 	}
@@ -654,6 +681,39 @@ func fixNapCatWebUIToken(cfg *config.Config) error {
 		}
 		return os.WriteFile(p, jsonBytes, 0644)
 	}
+	cmd := exec.Command("docker", "exec", "openclaw-qq", "bash", "-c",
+		fmt.Sprintf("cat > /app/napcat/config/webui.json << 'FIXEOF'\n%s\nFIXEOF", string(jsonBytes)))
+	return cmd.Run()
+}
+
+func fixNapCatWebUITokenMismatch(cfg *config.Config) error {
+	// Read Docker WEBUI_TOKEN env var
+	envOut, err := exec.Command("docker", "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", "openclaw-qq").Output()
+	if err != nil {
+		return fmt.Errorf("无法读取 Docker 环境变量: %v", err)
+	}
+	dockerEnvToken := ""
+	for _, line := range strings.Split(string(envOut), "\n") {
+		if strings.HasPrefix(line, "WEBUI_TOKEN=") {
+			dockerEnvToken = strings.TrimPrefix(line, "WEBUI_TOKEN=")
+			break
+		}
+	}
+	if dockerEnvToken == "" {
+		return fmt.Errorf("Docker 容器未设置 WEBUI_TOKEN 环境变量")
+	}
+
+	// Read current webui.json
+	out, err := exec.Command("docker", "exec", "openclaw-qq", "cat", "/app/napcat/config/webui.json").Output()
+	if err != nil {
+		return err
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal(out, &data); err != nil {
+		return err
+	}
+	data["token"] = dockerEnvToken
+	jsonBytes, _ := json.MarshalIndent(data, "", "  ")
 	cmd := exec.Command("docker", "exec", "openclaw-qq", "bash", "-c",
 		fmt.Sprintf("cat > /app/napcat/config/webui.json << 'FIXEOF'\n%s\nFIXEOF", string(jsonBytes)))
 	return cmd.Run()

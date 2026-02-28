@@ -943,6 +943,7 @@ if [ ! -d "$QQ_EXT_DIR" ]; then
   QQ_TGZ=$(mktemp)
   curl -fsSL "http://39.102.53.188:16198/clawpanel/bin/qq-plugin.tgz" -o "$QQ_TGZ" 2>/dev/null && \
   tar xzf "$QQ_TGZ" -C "$OPENCLAW_DIR/extensions/" && \
+  chown -R root:root "$QQ_EXT_DIR" 2>/dev/null && \
   echo "✅ QQ 插件安装完成" || echo "⚠️ QQ 插件安装失败（可稍后手动安装）"
   rm -f "$QQ_TGZ"
 fi
@@ -963,15 +964,8 @@ gw = cfg.setdefault('gateway', {})
 if gw.get('mode') != 'local':
     gw['mode'] = 'local'
     changed = True
-# Ensure channels.qq with wsUrl
-ch = cfg.setdefault('channels', {})
-qq = ch.setdefault('qq', {})
-if 'wsUrl' not in qq or not qq['wsUrl']:
-    qq['wsUrl'] = 'ws://127.0.0.1:3001'
-    changed = True
-if 'enabled' not in qq:
-    qq['enabled'] = True
-    changed = True
+# NOTE: Do NOT write channels.qq here — qq channel is registered by the QQ plugin itself.
+# Writing it directly causes 'unknown channel id: qq' error on startup.
 # Ensure plugins.entries.qq
 pl = cfg.setdefault('plugins', {})
 ent = pl.setdefault('entries', {})

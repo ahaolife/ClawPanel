@@ -214,10 +214,67 @@ func napcatProxy(method, path string, body interface{}, credential string) (map[
 	return result, nil
 }
 
+// readNapCatWebuiToken reads the actual token from NapCat's webui.json (Docker or Windows Shell).
+func readNapCatWebuiToken(cfg *config.Config) string {
+	if runtime.GOOS == "windows" {
+		napcatDir := getNapCatShellDir(cfg)
+		if napcatDir != "" {
+			data, err := os.ReadFile(filepath.Join(napcatDir, "config", "webui.json"))
+			if err == nil {
+				var webui map[string]interface{}
+				if json.Unmarshal(data, &webui) == nil {
+					if t, ok := webui["token"].(string); ok && t != "" {
+						return t
+					}
+				}
+			}
+		}
+	} else {
+		out, err := exec.Command("docker", "exec", "openclaw-qq", "cat", "/app/napcat/config/webui.json").Output()
+		if err == nil {
+			var webui map[string]interface{}
+			if json.Unmarshal(out, &webui) == nil {
+				if t, ok := webui["token"].(string); ok && t != "" {
+					return t
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// napcatLoginWithToken attempts to authenticate with NapCat WebUI using a given token.
+func napcatLoginWithToken(token string) string {
+	hash := sha256.Sum256([]byte(token + ".napcat"))
+	hashStr := fmt.Sprintf("%x", hash)
+	r, err := napcatProxy("POST", "/api/auth/login", map[string]string{"hash": hashStr}, "")
+	if err == nil {
+		if code, ok := r["code"].(float64); ok && code == 0 {
+			if data, ok := r["data"].(map[string]interface{}); ok {
+				if cred, ok := data["Credential"].(string); ok {
+					return cred
+				}
+			}
+		}
+	}
+	return ""
+}
+
 func napcatAuth(cfg *config.Config) string {
 	if napcatCredential != "" {
 		return napcatCredential
 	}
+
+	// 1. Try the actual token from NapCat's webui.json (ground truth)
+	containerToken := readNapCatWebuiToken(cfg)
+	if containerToken != "" {
+		if cred := napcatLoginWithToken(containerToken); cred != "" {
+			napcatCredential = cred
+			return napcatCredential
+		}
+	}
+
+	// 2. Fallback: admin-config or default token (may differ from container)
 	adminCfg := loadAdminConfig(cfg)
 	webuiToken := "clawpanel-qq"
 	if napcat, ok := adminCfg["napcat"].(map[string]interface{}); ok {
@@ -228,19 +285,34 @@ func napcatAuth(cfg *config.Config) string {
 	if envToken := os.Getenv("WEBUI_TOKEN"); envToken != "" {
 		webuiToken = envToken
 	}
-	hash := sha256.Sum256([]byte(webuiToken + ".napcat"))
-	hashStr := fmt.Sprintf("%x", hash)
-	r, err := napcatProxy("POST", "/api/auth/login", map[string]string{"hash": hashStr}, "")
-	if err == nil {
-		if code, ok := r["code"].(float64); ok && code == 0 {
-			if data, ok := r["data"].(map[string]interface{}); ok {
-				if cred, ok := data["Credential"].(string); ok {
-					napcatCredential = cred
-				}
+	if webuiToken != containerToken {
+		if cred := napcatLoginWithToken(webuiToken); cred != "" {
+			napcatCredential = cred
+			return napcatCredential
+		}
+	}
+
+	return napcatCredential
+}
+
+func isNapcatUnauthorized(r map[string]interface{}) bool {
+	// Check code == -1 with unauthorized message
+	if code, ok := r["code"].(float64); ok && code == -1 {
+		if msg, ok := r["message"].(string); ok {
+			lower := strings.ToLower(msg)
+			if strings.Contains(lower, "unauthorized") || strings.Contains(lower, "auth") {
+				return true
 			}
 		}
 	}
-	return napcatCredential
+	// Check raw response (NapCat may return non-JSON 401)
+	if raw, ok := r["raw"].(string); ok {
+		lower := strings.ToLower(raw)
+		if strings.Contains(lower, "unauthorized") || strings.Contains(lower, "401") {
+			return true
+		}
+	}
+	return false
 }
 
 func napcatApiCall(cfg *config.Config, method, path string, body interface{}) (map[string]interface{}, error) {
@@ -249,11 +321,11 @@ func napcatApiCall(cfg *config.Config, method, path string, body interface{}) (m
 	if err != nil {
 		return nil, err
 	}
-	// If unauthorized, retry
-	if code, ok := r["code"].(float64); ok && code == -1 {
-		if msg, ok := r["message"].(string); ok && strings.Contains(strings.ToLower(msg), "unauthorized") {
-			napcatCredential = ""
-			cred = napcatAuth(cfg)
+	// If unauthorized, clear cache and retry with fresh auth
+	if isNapcatUnauthorized(r) {
+		napcatCredential = ""
+		cred = napcatAuth(cfg)
+		if cred != "" {
 			return napcatProxy(method, path, body, cred)
 		}
 	}

@@ -339,6 +339,108 @@ func diagnoseNapCatLinux(cfg *config.Config, repair bool) []DiagnoseStep {
 		}
 	}
 
+	// Step 6.5: Check token consistency (Docker WEBUI_TOKEN env vs webui.json) and auth
+	webuiJsonToken := ""
+	if webuiOut != nil {
+		var webuiParsed map[string]interface{}
+		if json.Unmarshal(webuiOut, &webuiParsed) == nil {
+			webuiJsonToken, _ = webuiParsed["token"].(string)
+		}
+	}
+	// Read Docker WEBUI_TOKEN env
+	dockerEnvToken := ""
+	envOut, envErr := exec.Command("docker", "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", "openclaw-qq").Output()
+	if envErr == nil {
+		for _, line := range strings.Split(string(envOut), "\n") {
+			if strings.HasPrefix(line, "WEBUI_TOKEN=") {
+				dockerEnvToken = strings.TrimPrefix(line, "WEBUI_TOKEN=")
+				break
+			}
+		}
+	}
+	if webuiJsonToken != "" && dockerEnvToken != "" && webuiJsonToken != dockerEnvToken {
+		if repair {
+			// Fix: update webui.json to match Docker env var (env var is more authoritative since NapCat uses it on startup)
+			var webuiFixData map[string]interface{}
+			json.Unmarshal(webuiOut, &webuiFixData)
+			if webuiFixData == nil {
+				webuiFixData = map[string]interface{}{}
+			}
+			webuiFixData["token"] = dockerEnvToken
+			fixBytes, _ := json.MarshalIndent(webuiFixData, "", "  ")
+			cmd := exec.Command("docker", "exec", "openclaw-qq", "bash", "-c",
+				fmt.Sprintf("cat > /app/napcat/config/webui.json << 'FIXEOF'\n%s\nFIXEOF", string(fixBytes)))
+			if cmd.Run() == nil {
+				webuiJsonToken = dockerEnvToken
+				steps = append(steps, DiagnoseStep{
+					Step: "Token 一致性检测", Status: "fixed",
+					Message: "已修复 webui.json Token 与 Docker 环境变量不一致",
+					Detail:  fmt.Sprintf("webui.json Token 已更新为 \"%s\"（与 WEBUI_TOKEN 环境变量一致）", dockerEnvToken),
+				})
+			} else {
+				steps = append(steps, DiagnoseStep{
+					Step: "Token 一致性检测", Status: "error",
+					Message: "webui.json Token 与 Docker WEBUI_TOKEN 不一致且修复失败",
+					Detail:  fmt.Sprintf("webui.json: \"%s\", WEBUI_TOKEN: \"%s\"", webuiJsonToken, dockerEnvToken),
+				})
+			}
+		} else {
+			steps = append(steps, DiagnoseStep{
+				Step: "Token 一致性检测", Status: "error",
+				Message: "webui.json Token 与 Docker WEBUI_TOKEN 环境变量不一致",
+				Detail:  fmt.Sprintf("webui.json: \"%s\", WEBUI_TOKEN: \"%s\"。这会导致扫码登录时出现 Unauthorized 错误。点击「诊断并修复」可自动修复", webuiJsonToken, dockerEnvToken),
+			})
+		}
+	} else if webuiJsonToken != "" {
+		steps = append(steps, DiagnoseStep{
+			Step: "Token 一致性检测", Status: "ok",
+			Message: "WebUI Token 一致",
+		})
+	}
+
+	// Step 6.6: Verify ClawPanel can actually authenticate to NapCat WebUI
+	if webuiJsonToken != "" && isPortDialable(6099) {
+		authCred := napcatAuthWithToken(webuiJsonToken)
+		if authCred != "" {
+			steps = append(steps, DiagnoseStep{
+				Step: "WebUI 鉴权测试", Status: "ok",
+				Message: "ClawPanel 可成功认证 NapCat WebUI",
+			})
+		} else {
+			if repair {
+				// Try the Docker env token if different
+				if dockerEnvToken != "" && dockerEnvToken != webuiJsonToken {
+					authCred = napcatAuthWithToken(dockerEnvToken)
+				}
+				if authCred == "" {
+					// Last resort: reset token to default and restart
+					defaultToken := "clawpanel-qq"
+					fixData := map[string]interface{}{"host": "0.0.0.0", "port": 6099, "token": defaultToken, "loginRate": 3}
+					fixBytes, _ := json.MarshalIndent(fixData, "", "  ")
+					cmd := exec.Command("docker", "exec", "openclaw-qq", "bash", "-c",
+						fmt.Sprintf("cat > /app/napcat/config/webui.json << 'FIXEOF'\n%s\nFIXEOF", string(fixBytes)))
+					cmd.Run()
+					steps = append(steps, DiagnoseStep{
+						Step: "WebUI 鉴权测试", Status: "fixed",
+						Message: "WebUI 鉴权失败，已重置 Token 为默认值",
+						Detail:  "Token 已重置为 \"clawpanel-qq\"，需重启容器生效",
+					})
+				} else {
+					steps = append(steps, DiagnoseStep{
+						Step: "WebUI 鉴权测试", Status: "ok",
+						Message: "使用 Docker 环境变量 Token 鉴权成功",
+					})
+				}
+			} else {
+				steps = append(steps, DiagnoseStep{
+					Step: "WebUI 鉴权测试", Status: "error",
+					Message: "ClawPanel 无法认证 NapCat WebUI（Unauthorized）",
+					Detail:  "Token 可能不匹配或 NapCat 内部状态异常。点击「诊断并修复」可尝试重置 Token",
+				})
+			}
+		}
+	}
+
 	// If we did repairs that affected config, restart container
 	needsRestart := false
 	for _, s := range steps {
