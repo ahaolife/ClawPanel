@@ -964,8 +964,15 @@ gw = cfg.setdefault('gateway', {})
 if gw.get('mode') != 'local':
     gw['mode'] = 'local'
     changed = True
-# NOTE: Do NOT write channels.qq here — qq channel is registered by the QQ plugin itself.
-# Writing it directly causes 'unknown channel id: qq' error on startup.
+# Ensure channels.qq (the QQ plugin reads wsUrl from channels.qq config)
+ch = cfg.setdefault('channels', {})
+qq = ch.setdefault('qq', {})
+if not qq.get('wsUrl'):
+    qq['wsUrl'] = 'ws://127.0.0.1:3001'
+    changed = True
+if 'enabled' not in qq:
+    qq['enabled'] = True
+    changed = True
 # Ensure plugins.entries.qq
 pl = cfg.setdefault('plugins', {})
 ent = pl.setdefault('entries', {})

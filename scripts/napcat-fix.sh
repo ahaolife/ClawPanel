@@ -359,24 +359,26 @@ print('done')
 " 2>/dev/null && fixed "gateway.mode 已设为 local" || fail "gateway.mode 修复失败"
         fi
 
-        # Check and remove channels.qq if present (qq channel is registered by the QQ plugin, not config)
-        HAS_CHANNELS_QQ=$(python3 -c "import json; d=json.load(open('${OC_CFG}')); print('yes' if 'qq' in d.get('channels',{}) else 'no')" 2>/dev/null || echo "no")
-        if [ "$HAS_CHANNELS_QQ" = "yes" ]; then
-            warn "channels.qq 存在于配置中（应由插件注册，不应手动写入），正在移除..."
+        # Check channels.qq (QQ plugin reads wsUrl from channels.qq config)
+        QQ_WS=$(python3 -c "import json; d=json.load(open('${OC_CFG}')); print(d.get('channels',{}).get('qq',{}).get('wsUrl',''))" 2>/dev/null || echo "")
+        QQ_ENABLED=$(python3 -c "import json; d=json.load(open('${OC_CFG}')); print(d.get('channels',{}).get('qq',{}).get('enabled', False))" 2>/dev/null || echo "")
+        if [ "$QQ_WS" = "ws://127.0.0.1:3001" ] && [ "$QQ_ENABLED" = "True" ]; then
+            ok "channels.qq 配置正确 (wsUrl=ws://127.0.0.1:3001, enabled=true)"
+        else
+            warn "channels.qq 配置不完整 (wsUrl=\"${QQ_WS}\", enabled=${QQ_ENABLED})，正在修复..."
             python3 -c "
 import json
 with open('${OC_CFG}') as f:
     cfg = json.load(f)
-if 'channels' in cfg and 'qq' in cfg['channels']:
-    del cfg['channels']['qq']
-    if not cfg['channels']:
-        del cfg['channels']
+ch = cfg.setdefault('channels', {})
+qq = ch.setdefault('qq', {})
+qq['enabled'] = True
+if not qq.get('wsUrl'):
+    qq['wsUrl'] = 'ws://127.0.0.1:3001'
 with open('${OC_CFG}', 'w') as f:
     json.dump(cfg, f, indent=2)
 print('done')
-" 2>/dev/null && fixed "已移除 channels.qq（由 QQ 插件自动注册）" || fail "channels.qq 移除失败"
-        else
-            ok "channels.qq 未手动写入（正确，由插件注册）"
+" 2>/dev/null && fixed "channels.qq 已修复" || fail "channels.qq 修复失败"
         fi
 
         # Check plugins.entries.qq
@@ -392,17 +394,33 @@ with open('${OC_CFG}') as f:
 pl = cfg.setdefault('plugins', {})
 ent = pl.setdefault('entries', {})
 ent.setdefault('qq', {})['enabled'] = True
-ins = pl.setdefault('installs', {})
-if 'qq' not in ins:
-    ins['qq'] = {
-        'source': 'archive',
-        'installPath': '${OPENCLAW_DIR}/extensions/qq',
-        'version': '1.0.0'
-    }
 with open('${OC_CFG}', 'w') as f:
     json.dump(cfg, f, indent=2)
 print('done')
 " 2>/dev/null && fixed "plugins.entries.qq 已启用" || fail "plugins.entries.qq 修复失败"
+        fi
+
+        # Check plugins.installs.qq
+        QQ_INSTALL=$(python3 -c "import json; d=json.load(open('${OC_CFG}')); print('yes' if 'qq' in d.get('plugins',{}).get('installs',{}) else 'no')" 2>/dev/null || echo "no")
+        if [ "$QQ_INSTALL" = "yes" ]; then
+            ok "plugins.installs.qq 已配置"
+        else
+            warn "plugins.installs.qq 缺失，正在修复..."
+            python3 -c "
+import json
+with open('${OC_CFG}') as f:
+    cfg = json.load(f)
+pl = cfg.setdefault('plugins', {})
+ins = pl.setdefault('installs', {})
+ins['qq'] = {
+    'source': 'archive',
+    'installPath': '${OPENCLAW_DIR}/extensions/qq',
+    'version': '1.0.0'
+}
+with open('${OC_CFG}', 'w') as f:
+    json.dump(cfg, f, indent=2)
+print('done')
+" 2>/dev/null && fixed "plugins.installs.qq 已修复" || fail "plugins.installs.qq 修复失败"
         fi
     else
         warn "python3 未安装，无法自动检查/修复 openclaw.json"
