@@ -69,6 +69,19 @@ Unified configuration for **20+ channels** with one-click enable/disable:
 ### AI Assistant
 Built-in AI chat assistant floating panel, supports multi-provider/multi-model switching, automatically uses OpenClaw's configured API.
 
+### Panel Self-Update
+- China acceleration server for stable downloads
+- Auto: check → download → SHA256 verify → replace → restart
+- **Isolated updater process**: runs via `systemd-run --scope`, survives main process stop
+- Auto-backup old binary (`.bak`), SHA256 integrity check
+- Supports offline update: upload local binary file
+
+### OpenClaw Visual Update
+- Click "Go to Update" to open dedicated update page, visually execute `openclaw update`
+- Real-time update steps, progress bar, and command output log
+- Auto-detect current version and npm latest version
+- Auto-send gateway restart signal after update
+
 ## Architecture
 
 ```
@@ -81,10 +94,10 @@ Built-in AI chat assistant floating panel, supports multi-provider/multi-model s
 │  │  :19527   │  │            │  │         │ │
 │  └─────┬─────┘  └────────────┘  └─────────┘ │
 │        │                                     │
-│  ┌─────┴──────┐  ┌────────────┐             │
-│  │  Process   │  │ WebSocket  │             │
-│  │  Manager   │  │    Hub     │             │
-│  └─────┬──────┘  └──────┬─────┘             │
+│  ┌─────┴──────┐  ┌────────────┐  ┌────────┐│
+│  │  Process   │  │ WebSocket  │  │Updater ││
+│  │  Manager   │  │    Hub     │  │ :19528 ││
+│  └─────┬──────┘  └──────┬─────┘  └────────┘│
 └────────┼────────────────┼────────────────────┘
          │                │
     ┌────┴────┐    ┌──────┴──────┐

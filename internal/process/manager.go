@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,6 +73,8 @@ func (m *Manager) Start() error {
 	m.cmd.Dir = m.cfg.OpenClawDir
 	m.cmd.Env = append(os.Environ(),
 		fmt.Sprintf("OPENCLAW_DIR=%s", m.cfg.OpenClawDir),
+		fmt.Sprintf("OPENCLAW_STATE_DIR=%s", m.cfg.OpenClawDir),
+		fmt.Sprintf("OPENCLAW_CONFIG_PATH=%s/openclaw.json", m.cfg.OpenClawDir),
 	)
 
 	// 捕获 stdout 和 stderr
@@ -245,16 +248,97 @@ func (m *Manager) waitForExit() {
 		m.mu.Unlock()
 		log.Printf("[ProcessMgr] OpenClaw 进程已退出 (code: %d)", exitCode)
 
-		// 如果进程是在"运行中"状态异常退出（非手动 Stop），自动重启
-		// OpenClaw 的 SIGUSR1 自重启机制会杀掉自身，期望外部 supervisor 重拉
+		// OpenClaw gateway uses a daemon fork pattern: it spawns a child
+		// process "openclaw-gateway" that holds the port, then the parent
+		// exits (often with code 1). If the gateway port is listening after
+		// the parent exits, the daemon started successfully.
 		if wasRunning && exitCode != 0 {
+			time.Sleep(1 * time.Second) // give the daemon child time to bind
+			gatewayPort := m.getGatewayPort()
+			if gatewayPort != "" && m.isPortListening(gatewayPort) {
+				log.Printf("[ProcessMgr] OpenClaw 父进程已退出但网关守护进程正在端口 %s 运行（daemon fork 模式），视为正常", gatewayPort)
+				m.mu.Lock()
+				m.status.Running = true
+				m.status.ExitCode = 0
+				m.mu.Unlock()
+				// Monitor the daemon process; when port goes down, restart
+				go m.monitorDaemon(gatewayPort)
+				return
+			}
 			log.Println("[ProcessMgr] 检测到 OpenClaw 异常退出，3秒后自动重启...")
-			time.Sleep(3 * time.Second)
+			time.Sleep(2 * time.Second)
 			if err := m.Start(); err != nil {
 				log.Printf("[ProcessMgr] 自动重启失败: %v", err)
 			} else {
 				log.Println("[ProcessMgr] OpenClaw 已自动重启")
 			}
+		}
+	}
+}
+
+// getGatewayPort reads the gateway port from openclaw.json config
+func (m *Manager) getGatewayPort() string {
+	ocDir := m.cfg.OpenClawDir
+	if ocDir == "" {
+		home, _ := os.UserHomeDir()
+		ocDir = filepath.Join(home, ".openclaw")
+	}
+	cfgPath := filepath.Join(ocDir, "openclaw.json")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return "18789" // default gateway port
+	}
+	var cfg map[string]interface{}
+	if json.Unmarshal(data, &cfg) != nil {
+		return "18789"
+	}
+	if gw, ok := cfg["gateway"].(map[string]interface{}); ok {
+		if port, ok := gw["port"].(float64); ok && port > 0 {
+			return fmt.Sprintf("%d", int(port))
+		}
+	}
+	return "18789"
+}
+
+// isPortListening checks if a TCP port is currently listening
+func (m *Manager) isPortListening(port string) bool {
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:"+port, 2*time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+// monitorDaemon monitors the OpenClaw daemon process (fork pattern).
+// When the gateway port stops listening, mark process as stopped and restart.
+func (m *Manager) monitorDaemon(port string) {
+	failCount := 0
+	for {
+		time.Sleep(5 * time.Second)
+		m.mu.RLock()
+		running := m.status.Running
+		m.mu.RUnlock()
+		if !running {
+			return // manually stopped
+		}
+		if m.isPortListening(port) {
+			failCount = 0
+			continue
+		}
+		failCount++
+		if failCount >= 2 { // 2 consecutive failures (10s)
+			log.Printf("[ProcessMgr] OpenClaw 守护进程端口 %s 不再监听，尝试重启...", port)
+			m.mu.Lock()
+			m.status.Running = false
+			m.mu.Unlock()
+			time.Sleep(2 * time.Second)
+			if err := m.Start(); err != nil {
+				log.Printf("[ProcessMgr] 自动重启失败: %v", err)
+			} else {
+				log.Println("[ProcessMgr] OpenClaw 已自动重启")
+			}
+			return
 		}
 	}
 }

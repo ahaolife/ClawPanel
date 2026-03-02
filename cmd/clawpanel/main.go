@@ -28,6 +28,9 @@ import (
 	"github.com/zhaoxinyi02/ClawPanel/internal/websocket"
 )
 
+// Version is set by ldflags at build time: -X main.Version=...
+var Version = "dev"
+
 //go:embed all:frontend/dist
 var frontendFS embed.FS
 
@@ -37,17 +40,18 @@ var faqMD []byte
 func main() {
 	// 独立更新子进程模式：仅运行更新服务HTTP服务器
 	// 由主进程 fork 出来，主进程被 systemctl stop 杀死后子进程继续存活
-	if len(os.Args) >= 5 && os.Args[1] == "--updater-standalone" {
-		version := os.Args[2]   // e.g. "v5.0.9"
-		dataDir := os.Args[3]   // e.g. "/home/xxx/ClawPanel/data"
-		panelPort := os.Args[4] // e.g. "19527"
+	if len(os.Args) >= 6 && os.Args[1] == "--updater-standalone" {
+		version := os.Args[2]      // e.g. "5.0.11"
+		dataDir := os.Args[3]      // e.g. "/home/xxx/ClawPanel/data"
+		panelPort := os.Args[4]    // e.g. "19527"
+		openClawDir := os.Args[5]  // e.g. "/home/xxx/openclaw/config"
 		port := 0
 		fmt.Sscanf(panelPort, "%d", &port)
 		if port == 0 {
 			port = 19527
 		}
-		log.Printf("[Updater-Standalone] 独立更新子进程启动: version=%s dataDir=%s panelPort=%d", version, dataDir, port)
-		srv := updater.NewServer(version, dataDir, port)
+		log.Printf("[Updater-Standalone] 独立更新子进程启动: version=%s dataDir=%s panelPort=%d openClawDir=%s", version, dataDir, port, openClawDir)
+		srv := updater.NewServer(version, dataDir, openClawDir, port)
 		srv.RunStandalone()
 		return
 	}
@@ -127,10 +131,10 @@ func runServer(stopCh chan struct{}) {
 	pluginMgr := plugin.NewManager(cfg)
 
 	// 初始化面板自检更新器
-	panelUpdater := update.NewUpdater("v5.0.11", cfg.DataDir)
+	panelUpdater := update.NewUpdater(Version, cfg.DataDir)
 
 	// 启动独立更新服务（进程隔离，独立端口）
-	updaterSrv := updater.NewServer("v5.0.11", cfg.DataDir, cfg.Port)
+	updaterSrv := updater.NewServer(Version, cfg.DataDir, cfg.OpenClawDir, cfg.Port)
 	updaterSrv.Start()
 	defer updaterSrv.Stop()
 
@@ -214,7 +218,7 @@ func runServer(stopCh chan struct{}) {
 			auth.GET("/system/update-status", handler.UpdateStatus(cfg))
 
 			// ClawPanel 面板自检更新
-			auth.GET("/panel/version", handler.GetPanelVersion("v5.0.11"))
+			auth.GET("/panel/version", handler.GetPanelVersion(Version))
 			auth.GET("/panel/check-update", handler.CheckPanelUpdate(panelUpdater))
 			auth.POST("/panel/do-update", handler.DoPanelUpdate(panelUpdater))
 			auth.GET("/panel/update-progress", handler.PanelUpdateProgress(panelUpdater))
@@ -376,7 +380,7 @@ func runServer(stopCh chan struct{}) {
 
 	// 启动服务器
 	addr := fmt.Sprintf("0.0.0.0:%d", cfg.Port)
-	log.Printf("[ClawPanel] v5.0.11 启动中 → http://%s", addr)
+	log.Printf("[ClawPanel] v%s 启动中 → http://%s", Version, addr)
 	log.Printf("[ClawPanel] 数据目录: %s", cfg.DataDir)
 	log.Printf("[ClawPanel] OpenClaw 目录: %s", cfg.OpenClawDir)
 

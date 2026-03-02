@@ -21,12 +21,19 @@ import (
 // GetVersion 获取 OpenClaw 版本信息
 func GetVersion(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		ocConfig, _ := cfg.ReadOpenClawJSON()
+		// Always use live 'openclaw --version' to avoid stale lastTouchedVersion
 		currentVersion := "unknown"
-		if ocConfig != nil {
-			if meta, ok := ocConfig["meta"].(map[string]interface{}); ok {
-				if v, ok := meta["lastTouchedVersion"].(string); ok {
-					currentVersion = v
+		if out := runCmd("openclaw", "--version"); out != "" {
+			currentVersion = strings.TrimSpace(out)
+		}
+		// Fallback: read from openclaw.json meta
+		if currentVersion == "unknown" {
+			ocConfig, _ := cfg.ReadOpenClawJSON()
+			if ocConfig != nil {
+				if meta, ok := ocConfig["meta"].(map[string]interface{}); ok {
+					if v, ok := meta["lastTouchedVersion"].(string); ok {
+						currentVersion = v
+					}
 				}
 			}
 		}
@@ -43,6 +50,7 @@ func GetVersion(cfg *config.Config) gin.HandlerFunc {
 		if updateInfo != nil {
 			latestVersion, _ = updateInfo["lastNotifiedVersion"].(string)
 			lastCheckedAt, _ = updateInfo["lastCheckedAt"].(string)
+			// Re-evaluate against live currentVersion (not the cached one)
 			if latestVersion != "" && latestVersion != currentVersion {
 				updateAvailable = true
 			}
@@ -231,12 +239,19 @@ func RestartGatewayStatus(cfg *config.Config) gin.HandlerFunc {
 // CheckUpdate 检查 OpenClaw 更新
 func CheckUpdate(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		ocConfig, _ := cfg.ReadOpenClawJSON()
+		// Get current installed version via 'openclaw --version' (actual binary)
 		currentVersion := "unknown"
-		if ocConfig != nil {
-			if meta, ok := ocConfig["meta"].(map[string]interface{}); ok {
-				if v, ok := meta["lastTouchedVersion"].(string); ok {
-					currentVersion = v
+		if out := runCmd("openclaw", "--version"); out != "" {
+			currentVersion = strings.TrimSpace(out)
+		}
+		// Fallback: read from openclaw.json meta.lastTouchedVersion
+		if currentVersion == "unknown" {
+			ocConfig, _ := cfg.ReadOpenClawJSON()
+			if ocConfig != nil {
+				if meta, ok := ocConfig["meta"].(map[string]interface{}); ok {
+					if v, ok := meta["lastTouchedVersion"].(string); ok {
+						currentVersion = v
+					}
 				}
 			}
 		}

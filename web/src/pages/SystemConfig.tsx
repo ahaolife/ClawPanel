@@ -1313,34 +1313,15 @@ function UpdateSection({ versionInfo, updating, setUpdating, updateStatus, setUp
   }, [updateStatus]);
 
   const startUpdate = async () => {
-    if (!confirm('确定要更新 OpenClaw？更新过程中服务可能短暂中断。\n\n注意：需要在宿主机运行 update-watcher.sh 脚本来执行实际更新。')) return;
-    setUpdating(true); setUpdateLog(['⏳ 发送更新请求...']); setUpdateStatus('running'); setElapsed(0); startTimeRef.current = Date.now();
+    setUpdating(true);
     try {
-      const r = await api.doUpdate();
-      if (!r.ok) { setUpdateLog(['❌ ' + (r.error || '启动更新失败')]); setUpdating(false); setUpdateStatus('failed'); return; }
-      setUpdateLog(['✅ 更新请求已发送，等待宿主机执行...']);
-    } catch { setUpdateLog(['❌ 启动更新失败（网络错误）']); setUpdating(false); setUpdateStatus('failed'); return; }
-    // Poll update status every 1s
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
-      try {
-        const s = await api.getUpdateStatus();
-        if (s.ok) {
-          if (s.log?.length) setUpdateLog(s.log);
-          setUpdateStatus(s.status);
-          if (s.status === 'success') {
-            clearInterval(pollRef.current!); pollRef.current = null;
-            setUpdating(false);
-            setMsg('✅ 更新完成！');
-            setTimeout(() => { loadVersion(); }, 2000);
-          } else if (s.status === 'failed') {
-            clearInterval(pollRef.current!); pollRef.current = null;
-            setUpdating(false);
-            setMsg('❌ 更新失败，请查看日志');
-          }
-        }
-      } catch { /* server might restart during update */ }
-    }, 1000);
+      const r = await api.generateUpdateToken();
+      if (!r.ok) { alert('生成更新令牌失败: ' + (r.error || '')); setUpdating(false); return; }
+      // Redirect to updater page with openclaw mode
+      const url = r.updaterURL + '&mode=openclaw';
+      window.open(url, '_blank');
+    } catch (e) { alert('网络错误: ' + e); }
+    finally { setUpdating(false); }
   };
 
   const fmtElapsed = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60}s`;
@@ -1368,7 +1349,7 @@ function UpdateSection({ versionInfo, updating, setUpdating, updateStatus, setUp
           <button onClick={startUpdate}
             className={`flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-lg shadow-sm transition-all hover:shadow-md ${versionInfo.updateAvailable ? 'bg-amber-500 text-white hover:bg-amber-600 hover:shadow-amber-200 dark:hover:shadow-none' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}`}>
             <Package size={14} />
-            {versionInfo.updateAvailable ? '立即更新' : '强制更新'}
+            {versionInfo.updateAvailable ? '前往更新' : '强制更新'}
           </button>
         )}
       </div>
@@ -1376,7 +1357,7 @@ function UpdateSection({ versionInfo, updating, setUpdating, updateStatus, setUp
       {versionInfo.updateAvailable && !updating && updateStatus !== 'running' && (
         <div className="px-4 py-3 rounded-xl bg-amber-50 dark:bg-amber-900/20 text-xs text-amber-700 dark:text-amber-300 border border-amber-100 dark:border-amber-900/30 flex items-center gap-2">
           <AlertTriangle size={16} className="shrink-0" />
-          <span>有新版本可用！点击「立即更新」一键升级，或在终端运行: <code className="font-mono bg-amber-100 dark:bg-amber-900/50 px-1.5 py-0.5 rounded font-bold">openclaw update</code></span>
+          <span>有新版本可用！点击「前往更新」可视化一键升级，或在终端运行: <code className="font-mono bg-amber-100 dark:bg-amber-900/50 px-1.5 py-0.5 rounded font-bold">openclaw update</code></span>
         </div>
       )}
 
@@ -1411,7 +1392,7 @@ function UpdateSection({ versionInfo, updating, setUpdating, updateStatus, setUp
           {updateStatus === 'running' && (
             <div className="text-[10px] text-gray-400 flex items-center gap-1.5">
               <AlertTriangle size={10} />
-              提示：更新由宿主机 update-watcher.sh 脚本执行，请确保该脚本正在运行
+              提示：更新正在独立更新工具中执行，请勿关闭更新页面
             </div>
           )}
         </div>

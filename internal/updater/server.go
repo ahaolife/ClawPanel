@@ -67,26 +67,34 @@ type VersionInfo struct {
 type Server struct {
 	currentVersion string
 	dataDir        string
+	openClawDir    string // OpenClaw config directory
 	panelBin       string // path to clawpanel binary
 	panelPort      int
 	mu             sync.Mutex
-	state          UpdateState
+	state          UpdateState   // ClawPanel update state
+	ocState        UpdateState   // OpenClaw update state
 	srv            *http.Server
 	running        bool
 }
 
 // NewServer creates a new updater server
-func NewServer(currentVersion, dataDir string, panelPort int) *Server {
+func NewServer(currentVersion, dataDir, openClawDir string, panelPort int) *Server {
 	bin, _ := os.Executable()
 	bin, _ = filepath.EvalSymlinks(bin)
 	return &Server{
 		currentVersion: currentVersion,
 		dataDir:        dataDir,
+		openClawDir:    openClawDir,
 		panelBin:       bin,
 		panelPort:      panelPort,
 		state: UpdateState{
 			Phase: "idle",
 			Steps: defaultSteps(),
+			Log:   []string{},
+		},
+		ocState: UpdateState{
+			Phase: "idle",
+			Steps: defaultOCSteps(),
 			Log:   []string{},
 		},
 	}
@@ -101,6 +109,15 @@ func defaultSteps() []UpdateStep {
 		{Name: "备份文件", Status: "pending"},
 		{Name: "替换文件", Status: "pending"},
 		{Name: "启动服务", Status: "pending"},
+	}
+}
+
+func defaultOCSteps() []UpdateStep {
+	return []UpdateStep{
+		{Name: "验证授权", Status: "pending"},
+		{Name: "检测版本", Status: "pending"},
+		{Name: "执行更新", Status: "pending"},
+		{Name: "重启服务", Status: "pending"},
 	}
 }
 
@@ -156,8 +173,8 @@ func (s *Server) Start() {
 		// the updater child lives in its own transient scope and survives.
 		cmd := exec.Command("systemd-run", "--scope", "--unit=clawpanel-updater",
 			"/bin/bash", "-c",
-			fmt.Sprintf("%s --updater-standalone %s %s %d >%s 2>&1",
-				bin, s.currentVersion, s.dataDir, s.panelPort, logFile),
+			fmt.Sprintf("%s --updater-standalone %s %s %d %s >%s 2>&1",
+				bin, s.currentVersion, s.dataDir, s.panelPort, s.openClawDir, logFile),
 		)
 		cmd.SysProcAttr = sysProcAttr()
 		cmd.Dir = filepath.Dir(bin)
@@ -183,6 +200,7 @@ func (s *Server) startDirectChild(bin, logFile string) {
 		s.currentVersion,
 		s.dataDir,
 		fmt.Sprintf("%d", s.panelPort),
+		s.openClawDir,
 	)
 	cmd.SysProcAttr = sysProcAttr()
 	cmd.Dir = filepath.Dir(bin)
@@ -239,6 +257,10 @@ func (s *Server) RunStandalone() {
 	mux.HandleFunc("/updater/api/start-update", s.handleStartUpdate)
 	mux.HandleFunc("/updater/api/upload-update", s.handleUploadUpdate)
 	mux.HandleFunc("/updater/api/progress", s.handleProgress)
+	// OpenClaw update endpoints
+	mux.HandleFunc("/updater/api/check-openclaw-version", s.handleCheckOCVersion)
+	mux.HandleFunc("/updater/api/start-openclaw-update", s.handleStartOCUpdate)
+	mux.HandleFunc("/updater/api/openclaw-progress", s.handleOCProgress)
 
 	s.srv = &http.Server{
 		Addr:    fmt.Sprintf("0.0.0.0:%d", UpdaterPort),
@@ -246,23 +268,35 @@ func (s *Server) RunStandalone() {
 	}
 	s.running = true
 
-	// Auto-shutdown: exit after 30 min idle or 5 min after update finishes
+	// Auto-shutdown: exit after 30 min idle or 5 min after both updates finish
 	go func() {
 		for {
 			time.Sleep(10 * time.Second)
 			s.mu.Lock()
 			phase := s.state.Phase
 			finishedAt := s.state.FinishedAt
+			ocPhase := s.ocState.Phase
+			ocFinishedAt := s.ocState.FinishedAt
 			s.mu.Unlock()
 
-			if phase == "done" || phase == "error" || phase == "rolled_back" {
-				if finishedAt != "" {
-					if t, err := time.Parse(time.RFC3339, finishedAt); err == nil {
-						if time.Since(t) > 5*time.Minute {
-							log.Println("[Updater-Standalone] 更新完成超过5分钟，自动退出")
-							s.srv.Close()
-							return
-						}
+			// Don't exit if either update is still running
+			panelDone := phase == "idle" || phase == "done" || phase == "error" || phase == "rolled_back"
+			ocDone := ocPhase == "idle" || ocPhase == "done" || ocPhase == "error" || ocPhase == "rolled_back"
+			if !panelDone || !ocDone {
+				continue
+			}
+
+			// Check if at least one update was performed and finished > 5 min ago
+			latestFinish := finishedAt
+			if ocFinishedAt > latestFinish {
+				latestFinish = ocFinishedAt
+			}
+			if latestFinish != "" {
+				if t, err := time.Parse(time.RFC3339, latestFinish); err == nil {
+					if time.Since(t) > 5*time.Minute {
+						log.Println("[Updater-Standalone] 更新完成超过5分钟，自动退出")
+						s.srv.Close()
+						return
 					}
 				}
 			}
@@ -466,6 +500,356 @@ func (s *Server) handleProgress(w http.ResponseWriter, r *http.Request) {
 		"ok":    true,
 		"state": state,
 	})
+}
+
+// --- OpenClaw Update Handlers ---
+
+func (s *Server) handleCheckOCVersion(w http.ResponseWriter, r *http.Request) {
+	s.setCORS(w)
+	if r.Method == "OPTIONS" {
+		return
+	}
+	if !s.checkToken(w, r) {
+		return
+	}
+
+	// Get current installed version via 'openclaw --version'
+	currentVersion := "unknown"
+	if verOut, verErr := exec.Command("openclaw", "--version").Output(); verErr == nil {
+		currentVersion = strings.TrimSpace(string(verOut))
+	}
+	// Fallback: read from openclaw.json meta
+	if currentVersion == "unknown" {
+		cfgPath := filepath.Join(s.openClawDir, "openclaw.json")
+		if data, err := os.ReadFile(cfgPath); err == nil {
+			var cfg map[string]interface{}
+			if json.Unmarshal(data, &cfg) == nil {
+				if meta, ok := cfg["meta"].(map[string]interface{}); ok {
+					if v, ok := meta["lastTouchedVersion"].(string); ok {
+						currentVersion = v
+					}
+				}
+			}
+		}
+	}
+
+	// Check latest version via npm view
+	latestVersion := ""
+	cmd := exec.Command("npm", "view", "openclaw", "version")
+	cmd.Env = append(os.Environ(), "PATH="+os.Getenv("PATH")+":/usr/local/bin:/usr/bin:/bin:/snap/bin")
+	if out, err := cmd.Output(); err == nil {
+		latestVersion = strings.TrimSpace(string(out))
+	}
+
+	hasUpdate := latestVersion != "" && latestVersion != currentVersion && latestVersion > currentVersion
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":             true,
+		"currentVersion": currentVersion,
+		"latestVersion":  latestVersion,
+		"hasUpdate":      hasUpdate,
+	})
+}
+
+func (s *Server) handleStartOCUpdate(w http.ResponseWriter, r *http.Request) {
+	s.setCORS(w)
+	if r.Method == "OPTIONS" {
+		return
+	}
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	if !s.checkToken(w, r) {
+		return
+	}
+
+	s.mu.Lock()
+	if s.ocState.Phase != "idle" && s.ocState.Phase != "done" && s.ocState.Phase != "error" && s.ocState.Phase != "rolled_back" {
+		s.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok": false, "error": "OpenClaw 更新正在进行中",
+		})
+		return
+	}
+	s.ocState = UpdateState{
+		Phase:     "validating",
+		Steps:     defaultOCSteps(),
+		Log:       []string{},
+		StartedAt: time.Now().Format(time.RFC3339),
+	}
+	s.mu.Unlock()
+
+	go s.doOCUpdate()
+
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+}
+
+func (s *Server) handleOCProgress(w http.ResponseWriter, r *http.Request) {
+	s.setCORS(w)
+	if r.Method == "OPTIONS" {
+		return
+	}
+	s.mu.Lock()
+	state := s.ocState
+	logCopy := make([]string, len(s.ocState.Log))
+	copy(logCopy, s.ocState.Log)
+	state.Log = logCopy
+	stepsCopy := make([]UpdateStep, len(s.ocState.Steps))
+	copy(stepsCopy, s.ocState.Steps)
+	state.Steps = stepsCopy
+	s.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":    true,
+		"state": state,
+	})
+}
+
+// --- OpenClaw Update Logic ---
+
+func (s *Server) doOCUpdate() {
+	// Step 1: Validate
+	s.setOCStep(0, "running", "验证授权中...")
+	s.ocLog("🔐 验证更新授权...")
+	s.setOCStep(0, "done", "授权验证通过")
+	s.setOCProgress(10)
+
+	// Step 2: Check version
+	s.setOCStep(1, "running", "正在检测 OpenClaw 版本...")
+	s.ocLog("🔍 检测 OpenClaw 版本...")
+
+	currentVersion := "unknown"
+	// Use 'openclaw --version' to get the actual installed binary version
+	if verOut, verErr := exec.Command("openclaw", "--version").Output(); verErr == nil {
+		currentVersion = strings.TrimSpace(string(verOut))
+	}
+	// Fallback: read from openclaw.json meta.lastTouchedVersion
+	cfgPath := filepath.Join(s.openClawDir, "openclaw.json")
+	if currentVersion == "unknown" {
+		if data, err := os.ReadFile(cfgPath); err == nil {
+			var cfg map[string]interface{}
+			if json.Unmarshal(data, &cfg) == nil {
+				if meta, ok := cfg["meta"].(map[string]interface{}); ok {
+					if v, ok := meta["lastTouchedVersion"].(string); ok {
+						currentVersion = v
+					}
+				}
+			}
+		}
+	}
+	s.mu.Lock()
+	s.ocState.FromVer = currentVersion
+	s.mu.Unlock()
+
+	latestVersion := ""
+	cmd := exec.Command("npm", "view", "openclaw", "version")
+	cmd.Env = append(os.Environ(), "PATH="+os.Getenv("PATH")+":/usr/local/bin:/usr/bin:/bin:/snap/bin")
+	if out, err := cmd.Output(); err == nil {
+		latestVersion = strings.TrimSpace(string(out))
+	}
+
+	if latestVersion == "" {
+		s.ocLog("⚠️ 无法获取最新版本号，继续执行更新...")
+	} else {
+		s.ocLog("📦 当前版本: %s → 最新版本: %s", currentVersion, latestVersion)
+		s.mu.Lock()
+		s.ocState.ToVer = latestVersion
+		s.mu.Unlock()
+	}
+	s.setOCStep(1, "done", fmt.Sprintf("当前: %s → 最新: %s", currentVersion, ternary(latestVersion == "", "未知", latestVersion)))
+	s.setOCProgress(20)
+
+	// Step 3: Execute update via npm install -g openclaw@latest
+	// We use npm instead of 'openclaw update' because 'openclaw update' may update
+	// a different installation (e.g. /usr/lib) than the one actually in PATH (e.g. nvm).
+	// Using 'npm install -g' from PATH ensures the correct installation gets updated.
+	s.setOCStep(2, "running", "正在更新 OpenClaw ...")
+
+	// Find which npm to use (same one that manages the openclaw in PATH)
+	npmBin := "npm"
+	envPath := os.Getenv("PATH") + ":/usr/local/bin:/usr/bin:/bin:/snap/bin"
+	// Try to find npm in the same directory as openclaw
+	if ocBin, err := exec.LookPath("openclaw"); err == nil {
+		ocDir := filepath.Dir(ocBin)
+		candidate := filepath.Join(ocDir, "npm")
+		if _, err := os.Stat(candidate); err == nil {
+			npmBin = candidate
+			s.ocLog("� 使用 npm: %s (与 openclaw 同目录)", npmBin)
+		}
+	}
+
+	targetVersion := "latest"
+	if latestVersion != "" {
+		targetVersion = latestVersion
+	}
+	s.ocLog("🚀 执行 %s install -g openclaw@%s ...", npmBin, targetVersion)
+
+	updateCmd := exec.Command(npmBin, "install", "-g", "openclaw@"+targetVersion)
+	updateCmd.Env = append(os.Environ(), "PATH="+envPath)
+	updateCmd.Dir = filepath.Dir(s.openClawDir)
+
+	// Capture stdout+stderr in real time via pipe
+	stdout, err := updateCmd.StdoutPipe()
+	if err != nil {
+		s.setOCStepError(2, "创建输出管道失败: "+err.Error())
+		s.setOCError("创建输出管道失败: " + err.Error())
+		return
+	}
+	updateCmd.Stderr = updateCmd.Stdout // merge stderr into stdout
+
+	if err := updateCmd.Start(); err != nil {
+		s.setOCStepError(2, "启动 npm install 失败: "+err.Error())
+		s.setOCError("启动 npm install 失败: " + err.Error())
+		return
+	}
+
+	// Read output line by line, collect all output for post-analysis
+	var allOutput []string
+	var outputMu sync.Mutex
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := stdout.Read(buf)
+			if n > 0 {
+				lines := strings.Split(string(buf[:n]), "\n")
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					if line != "" {
+						s.ocLog(line)
+						outputMu.Lock()
+						allOutput = append(allOutput, line)
+						outputMu.Unlock()
+						s.mu.Lock()
+						pct := s.ocState.Progress
+						s.mu.Unlock()
+						if pct < 80 {
+							s.setOCProgress(pct + 2)
+						}
+					}
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	err = updateCmd.Wait()
+	if err != nil {
+		exitErr := ""
+		if e, ok := err.(*exec.ExitError); ok {
+			exitErr = fmt.Sprintf("退出码: %d", e.ExitCode())
+		} else {
+			exitErr = err.Error()
+		}
+		s.ocLog("❌ npm install 失败: %s", exitErr)
+		s.setOCStepError(2, "更新失败: "+exitErr)
+		s.setOCError("npm install -g openclaw 失败: " + exitErr)
+		return
+	}
+
+	// Verify the new version
+	verCmd := exec.Command("openclaw", "--version")
+	verCmd.Env = append(os.Environ(), "PATH="+envPath)
+	if verOut, verErr := verCmd.Output(); verErr == nil {
+		newVer := strings.TrimSpace(string(verOut))
+		s.ocLog("📦 更新后版本: %s", newVer)
+		s.mu.Lock()
+		s.ocState.ToVer = newVer
+		s.mu.Unlock()
+	}
+
+	s.setOCStep(2, "done", "OpenClaw 更新完成")
+	s.ocLog("✅ OpenClaw 更新完成")
+	s.setOCProgress(80)
+
+	// Step 4: Restart gateway daemon
+	// Kill the running openclaw-gateway daemon process so ClawPanel's
+	// monitorDaemon detects the port going down and auto-restarts with the new binary.
+	s.setOCStep(3, "running", "正在重启 OpenClaw 网关...")
+	s.ocLog("🔄 终止旧网关守护进程...")
+
+	// Kill openclaw-gateway daemon processes
+	killCmd := exec.Command("pkill", "-f", "openclaw-gateway")
+	killCmd.Run() // ignore error (may not be running)
+
+	s.ocLog("⏳ 等待 ClawPanel 自动重启网关...")
+	// Wait for ClawPanel's monitorDaemon to detect port down and restart
+	time.Sleep(15 * time.Second)
+
+	s.setOCStep(3, "done", "网关已重启")
+	s.ocLog("✅ 网关重启完成")
+	s.setOCProgress(100)
+
+	// Verify new version via command
+	newVersion := ""
+	finalVerCmd := exec.Command("openclaw", "--version")
+	finalVerCmd.Env = append(os.Environ(), "PATH="+envPath)
+	if out, err := finalVerCmd.Output(); err == nil {
+		newVersion = strings.TrimSpace(string(out))
+	}
+	if newVersion != "" && newVersion != currentVersion {
+		s.mu.Lock()
+		s.ocState.ToVer = newVersion
+		s.mu.Unlock()
+		s.ocLog("🎉 OpenClaw 更新完成！%s → %s", currentVersion, newVersion)
+	} else {
+		s.ocLog("🎉 OpenClaw 更新完成！")
+	}
+
+	s.mu.Lock()
+	s.ocState.Phase = "done"
+	s.ocState.Message = "OpenClaw 更新完成！"
+	s.ocState.FinishedAt = time.Now().Format(time.RFC3339)
+	s.mu.Unlock()
+}
+
+// --- OpenClaw state helpers ---
+
+func (s *Server) setOCStep(idx int, status, message string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if idx < len(s.ocState.Steps) {
+		s.ocState.Steps[idx].Status = status
+		s.ocState.Steps[idx].Message = message
+	}
+}
+
+func (s *Server) setOCStepError(idx int, message string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if idx < len(s.ocState.Steps) {
+		s.ocState.Steps[idx].Status = "error"
+		s.ocState.Steps[idx].Message = message
+	}
+	s.ocState.Phase = "error"
+	s.ocState.FinishedAt = time.Now().Format(time.RFC3339)
+}
+
+func (s *Server) setOCProgress(pct int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ocState.Progress = pct
+}
+
+func (s *Server) setOCError(msg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ocState.Phase = "error"
+	s.ocState.Error = msg
+	s.ocState.Message = "更新失败"
+	s.ocState.FinishedAt = time.Now().Format(time.RFC3339)
+	s.ocState.Log = append(s.ocState.Log, "❌ "+msg)
+}
+
+func (s *Server) ocLog(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	log.Printf("[Updater-OC] %s", msg)
+	s.mu.Lock()
+	s.ocState.Log = append(s.ocState.Log, msg)
+	s.mu.Unlock()
 }
 
 // --- Update Logic ---

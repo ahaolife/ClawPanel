@@ -76,8 +76,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 <body>
 <div class="container">
   <div class="header">
-    <h1>🐾 ClawPanel 更新工具</h1>
-    <p>独立更新服务 · 进程隔离 · 安全可靠</p>
+    <h1 id="page-title">🐾 ClawPanel 更新工具</h1>
+    <p id="page-subtitle">独立更新服务 · 进程隔离 · 安全可靠</p>
   </div>
 
   <!-- Unauthorized state -->
@@ -120,7 +120,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
           🔍 重新检测
         </button>
       </div>
-      <div style="margin-top:1rem">
+      <div id="upload-section" style="margin-top:1rem">
         <button class="btn btn-upload" id="btn-upload" onclick="document.getElementById('file-input').click()">
           📁 离线更新：上传可执行文件
           <span style="font-size:.65rem;color:var(--muted)">适用于无网络环境</span>
@@ -156,7 +156,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 <div id="confirm-modal" class="modal-overlay hidden" onclick="closeModal()">
   <div class="modal" onclick="event.stopPropagation()">
     <h3>⚠️ 确认更新</h3>
-    <p id="confirm-text">确定要更新 ClawPanel 吗？更新过程中面板服务将暂时停止。</p>
+    <p id="confirm-text">确定要更新吗？</p>
     <div class="actions">
       <button class="btn btn-secondary" onclick="closeModal()">取消</button>
       <button class="btn btn-primary" onclick="doUpdate()">确认更新</button>
@@ -172,6 +172,31 @@ const PANEL_URL = window.location.protocol + '//' + window.location.hostname + '
 let pollTimer = null;
 let versionInfo = null;
 
+// Detect mode from URL: ?mode=openclaw or default (clawpanel)
+const urlParams = new URLSearchParams(window.location.search);
+const MODE = urlParams.get('mode') === 'openclaw' ? 'openclaw' : 'clawpanel';
+
+// Mode-specific config
+const CFG = MODE === 'openclaw' ? {
+  title: '🦞 OpenClaw 更新工具',
+  subtitle: '可视化更新 · 实时日志 · openclaw update',
+  checkApi: 'check-openclaw-version',
+  startApi: 'start-openclaw-update',
+  progressApi: 'openclaw-progress',
+  confirmMsg: '确定要更新 OpenClaw 吗？将执行 openclaw update 命令。',
+  hasUpload: false,
+  productName: 'OpenClaw'
+} : {
+  title: '🐾 ClawPanel 更新工具',
+  subtitle: '独立更新服务 · 进程隔离 · 安全可靠',
+  checkApi: 'check-version',
+  startApi: 'start-update',
+  progressApi: 'progress',
+  confirmMsg: '确定要更新 ClawPanel 吗？更新过程中面板服务将暂时停止。',
+  hasUpload: true,
+  productName: 'ClawPanel'
+};
+
 async function api(path, opts) {
   const sep = path.includes('?') ? '&' : '?';
   const url = UPDATER_BASE + '/updater/api/' + path + sep + 'token=' + TOKEN;
@@ -180,6 +205,14 @@ async function api(path, opts) {
 }
 
 async function init() {
+  // Set mode-specific UI
+  document.getElementById('page-title').textContent = CFG.title;
+  document.getElementById('page-subtitle').textContent = CFG.subtitle;
+  document.title = CFG.productName + ' 更新工具';
+  if (!CFG.hasUpload) {
+    document.getElementById('upload-section').style.display = 'none';
+  }
+
   // Validate token
   const r = await api('validate');
   if (!r.ok) {
@@ -198,18 +231,22 @@ async function checkVersion() {
   document.getElementById('major-warn').classList.add('hidden');
 
   try {
-    const r = await api('check-version');
+    const r = await api(CFG.checkApi);
     if (!r.ok) {
       document.getElementById('ver-status').innerHTML = '<div class="err-box">检测失败: ' + (r.error||'未知错误') + '</div>';
       return;
     }
     versionInfo = r;
+    document.getElementById('cur-ver').textContent = r.currentVersion || '-';
     document.getElementById('new-ver').textContent = r.latestVersion || '-';
     if (r.hasUpdate) {
-      document.getElementById('ver-status').innerHTML = '<div class="warn-box">⬆️ 发现新版本！当前 ' + r.currentVersion + ' → ' + r.latestVersion + ' <span class="badge badge-src" style="margin-left:4px">' + r.source + '</span></div>';
+      document.getElementById('ver-status').innerHTML = '<div class="warn-box">⬆️ 发现新版本！当前 ' + r.currentVersion + ' → ' + r.latestVersion + (r.source ? ' <span class="badge badge-src" style="margin-left:4px">' + r.source + '</span>' : '') + '</div>';
       document.getElementById('btn-update').disabled = false;
     } else {
       document.getElementById('ver-status').innerHTML = '<div class="ok-box">✅ 当前已是最新版本</div>';
+      // Still allow force update
+      document.getElementById('btn-update').disabled = false;
+      document.getElementById('btn-update').textContent = '🔄 强制更新';
     }
     if (r.releaseNote) {
       document.getElementById('release-note').classList.remove('hidden');
@@ -225,7 +262,12 @@ async function checkVersion() {
 }
 
 function confirmUpdate() {
-  const t = versionInfo ? '确定要从 ' + versionInfo.currentVersion + ' 更新到 ' + versionInfo.latestVersion + ' 吗？\\n\\n更新过程中 ClawPanel 面板服务将暂时停止。' : '确定要开始更新吗？';
+  var t = CFG.confirmMsg;
+  if (versionInfo && versionInfo.hasUpdate) {
+    t = '确定要从 ' + versionInfo.currentVersion + ' 更新到 ' + versionInfo.latestVersion + ' 吗？';
+    if (MODE === 'clawpanel') t += '\\n\\n更新过程中 ClawPanel 面板服务将暂时停止。';
+    if (MODE === 'openclaw') t += '\\n\\n将执行 openclaw update 命令。';
+  }
   document.getElementById('confirm-text').textContent = t;
   const modal = document.getElementById('confirm-modal');
   modal.style.display = '';
@@ -242,14 +284,18 @@ async function doUpdate() {
   modal.style.display = 'none';
   showProgress();
   try {
-    const r = await api('start-update', {method:'POST'});
+    const r = await api(CFG.startApi, {method:'POST'});
     if (!r.ok) {
       addLog('❌ 启动更新失败: ' + (r.error||''));
       return;
     }
     startPolling();
   } catch(e) {
-    addLog('⚠️ 启动请求发送完成（服务可能正在重启中）');
+    if (MODE === 'clawpanel') {
+      addLog('⚠️ 启动请求发送完成（服务可能正在重启中）');
+    } else {
+      addLog('⚠️ 网络错误: ' + e.message);
+    }
     startPolling();
   }
 }
@@ -271,8 +317,7 @@ async function handleUpload(e) {
   const fd = new FormData();
   fd.append('file', file);
   try {
-    const sep = 'upload-update'.includes('?') ? '&' : '?';
-    const url = UPDATER_BASE + '/updater/api/upload-update' + sep + 'token=' + TOKEN;
+    const url = UPDATER_BASE + '/updater/api/upload-update?token=' + TOKEN;
     const resp = await fetch(url, {method:'POST', body:fd});
     const r = await resp.json();
     if (!r.ok) { alert('上传失败: ' + (r.error||'')); return; }
@@ -298,13 +343,11 @@ function startPolling() {
 
 async function pollProgress() {
   try {
-    const r = await api('progress');
+    const r = await api(CFG.progressApi);
     if (!r.ok) return;
     const st = r.state;
-    // Update progress bar
     document.getElementById('progress-pct').textContent = (st.progress||0) + '%%';
     document.getElementById('progress-fill').style.width = (st.progress||0) + '%%';
-    // Update steps
     const stepsEl = document.getElementById('steps-list');
     stepsEl.innerHTML = (st.steps||[]).map(function(s) {
       const icons = {pending:'○', running:'◉', done:'✓', error:'✕', skipped:'—'};
@@ -314,11 +357,9 @@ async function pollProgress() {
         (s.message ? '<div class="step-msg">' + s.message + '</div>' : '') +
         '</div></div>';
     }).join('');
-    // Update log
     const logEl = document.getElementById('log-box');
     logEl.innerHTML = (st.log||[]).map(function(l){return '<div>'+l+'</div>'}).join('');
     logEl.scrollTop = logEl.scrollHeight;
-    // Check terminal states
     if (st.phase === 'done' || st.phase === 'error' || st.phase === 'rolled_back') {
       clearInterval(pollTimer); pollTimer = null;
       setTimeout(function(){showResult(st)}, 500);
@@ -333,10 +374,10 @@ function showResult(st) {
   document.getElementById('result-card').classList.remove('hidden');
   const el = document.getElementById('result-content');
   if (st.phase === 'done') {
-    el.innerHTML = '<div class="ok-box" style="font-size:.85rem">🎉 更新成功！</div>' +
+    el.innerHTML = '<div class="ok-box" style="font-size:.85rem">🎉 ' + CFG.productName + ' 更新成功！</div>' +
       '<p style="font-size:.78rem;color:var(--muted);margin-bottom:.5rem">' +
       (st.from_ver ? st.from_ver + ' → ' + st.to_ver : '更新完成') +
-      ' · 线路: ' + (st.source||'-') + '</p>';
+      (st.source ? ' · 线路: ' + st.source : '') + '</p>';
   } else if (st.phase === 'rolled_back') {
     el.innerHTML = '<div class="warn-box">⚠️ 更新失败，已自动回滚到旧版本</div>' +
       '<div class="err-box">' + (st.error||'未知错误') + '</div>';
@@ -350,7 +391,6 @@ function goBack() {
   window.location.href = PANEL_URL + '/#/system?tab=version';
 }
 
-// Prevent page refresh
 window.addEventListener('beforeunload', function(e) {
   if (pollTimer) {
     e.preventDefault();
