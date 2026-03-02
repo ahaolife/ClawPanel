@@ -1,5 +1,6 @@
 # ============================================================
-# ClawPanel v5.0.10 一键安装脚本 (Windows PowerShell)
+# ClawPanel 一键安装脚本 (Windows PowerShell)
+# 兼容 PowerShell 5.1 及以上版本
 # 用法 (管理员 PowerShell):
 #   irm https://raw.githubusercontent.com/zhaoxinyi02/ClawPanel/main/scripts/install.ps1 | iex
 # 或:
@@ -8,12 +9,24 @@
 
 $ErrorActionPreference = "Stop"
 
-$VERSION = "5.0.10"
-$INSTALL_DIR = "C:\ClawPanel"
-$BINARY_NAME = "clawpanel-v${VERSION}-windows-amd64.exe"
 $REPO = "zhaoxinyi02/ClawPanel"
+$INSTALL_DIR = "C:\ClawPanel"
 $SERVICE_NAME = "ClawPanel"
 $PORT = "19527"
+
+# ==================== 自动获取最新版本 ====================
+Write-Host "  [ClawPanel] 获取最新版本信息..." -ForegroundColor Cyan
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $releaseInfo = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases/latest" -UseBasicParsing
+    $VERSION = $releaseInfo.tag_name -replace '^v', ''
+    Write-Host "  [ClawPanel] 最新版本: v$VERSION" -ForegroundColor Green
+} catch {
+    Write-Host "  [ClawPanel] 无法获取最新版本，使用默认版本..." -ForegroundColor Yellow
+    $VERSION = "5.0.14"
+}
+
+$BINARY_NAME = "clawpanel-v${VERSION}-windows-amd64.exe"
 
 # ==================== 工具函数 ====================
 function Log($msg)  { Write-Host "  [ClawPanel] $msg" -ForegroundColor Green }
@@ -50,7 +63,8 @@ if (-NOT $isAdmin) {
     Err "请右键选择「以管理员身份运行」PowerShell，然后重新执行此脚本！"
 }
 
-Info "系统信息: Windows/$([System.Environment]::Is64BitOperatingSystem ? 'x64' : 'x86')"
+if ([System.Environment]::Is64BitOperatingSystem) { $sysArch = 'x64' } else { $sysArch = 'x86' }
+Info "系统信息: Windows/$sysArch"
 Info "安装目录: $INSTALL_DIR"
 Write-Host ""
 

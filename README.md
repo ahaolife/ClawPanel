@@ -9,7 +9,7 @@
 Go 单二进制 · React 18 · TailwindCSS · SQLite · WebSocket 实时推送 · 跨平台
 
 [![License](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-red?style=flat-square)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.0.10-violet?style=flat-square)](https://github.com/zhaoxinyi02/ClawPanel/releases)
+[![Version](https://img.shields.io/badge/version-5.0.14-violet?style=flat-square)](https://github.com/zhaoxinyi02/ClawPanel/releases)
 [![Go](https://img.shields.io/badge/go-1.22+-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev)
 [![React](https://img.shields.io/badge/react-18-61DAFB?style=flat-square&logo=react&logoColor=white)](https://react.dev)
 [![GitHub Stars](https://img.shields.io/github/stars/zhaoxinyi02/ClawPanel?style=flat-square&logo=github)](https://github.com/zhaoxinyi02/ClawPanel/stargazers)
@@ -193,7 +193,10 @@ curl -sSO https://raw.githubusercontent.com/zhaoxinyi02/ClawPanel/main/scripts/i
 irm https://raw.githubusercontent.com/zhaoxinyi02/ClawPanel/main/scripts/install.ps1 | iex
 ```
 
-或从 [Releases](https://github.com/zhaoxinyi02/ClawPanel/releases) 下载 `ClawPanel-Setup.exe`，右键以管理员身份运行。
+> [!NOTE]
+> 安装脚本兼容 **PowerShell 5.1 及以上**版本（Windows 自带版本即可）。脚本会自动从 GitHub 获取最新版本，无需手动指定版本号。
+
+或从 [Releases](https://github.com/zhaoxinyi02/ClawPanel/releases) 手动下载 `clawpanel-windows-amd64.exe`，双击或命令行运行。
 
 ### 方式二：手动下载运行
 
@@ -278,6 +281,20 @@ sc query ClawPanel
 ## 更新日志
 
 完整更新日志请查看 [changelogs/](changelogs/) 目录。
+
+### v5.0.14 — 脚本修复 · Windows 兼容性
+- **🐛 install.ps1 兼容 PowerShell 5.1**：移除三元运算符，Windows 自带 PS 5.1 可直接运行
+- **✨ 安装脚本自动获取最新版本**：`install.sh` / `install.ps1` 启动时自动从 GitHub API 拉取最新版本号，无需随每次发版更新脚本
+- **🐛 Windows 安装 OpenClaw 不再因缺少 Node.js 退出**：自动通过 winget 安装 Node.js LTS 后继续
+
+### v5.0.13 — 修复 QQ 插件强制注入
+- **🐛 修复 QQ 插件配置强制写入**：仅在 QQ 插件已安装且 NapCat 运行时才注入 `channels.qq`，避免未使用 QQ 的用户 OpenClaw 网关启动失败
+
+### v5.0.12 — OpenClaw 可视化更新 · 版本显示修复
+- **✨ OpenClaw 可视化更新界面**：实时显示更新步骤、进度条、命令输出日志
+- **🐛 版本更新页显示旧版本**：`GetVersion` API 改用 `openclaw --version` 获取真实版本，不再读取 `lastTouchedVersion`
+- **🐛 ClawPanel 版本号显示错误**：版本号改为 ldflags 动态注入，修复硬编码导致显示错误
+- **✨ OpenClaw 网关 daemon fork 模式检测**：正确识别 daemon fork 启动，防止误判崩溃
 
 ### v5.0.3 — 插件中心 · Windows NapCat · 跨平台修复
 - **🧩 插件中心**：全新插件市场页面，支持浏览/安装/卸载/配置/更新/启用/禁用插件

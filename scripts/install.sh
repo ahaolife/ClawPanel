@@ -1,6 +1,7 @@
 #!/bin/bash
 # ============================================================
-# ClawPanel v5.0.10 一键安装脚本 (Linux/macOS)
+# ClawPanel 一键安装脚本 (Linux/macOS)
+# 自动获取最新 Release 版本，无需手动更新脚本
 # 用法:
 #   curl -sSO https://raw.githubusercontent.com/zhaoxinyi02/ClawPanel/main/scripts/install.sh && sudo bash install.sh
 # 或:
@@ -9,12 +10,27 @@
 
 set -e
 
-VERSION="5.0.10"
 INSTALL_DIR="/opt/clawpanel"
 SERVICE_NAME="clawpanel"
 BINARY_NAME="clawpanel"
 REPO="zhaoxinyi02/ClawPanel"
 PORT="19527"
+DEFAULT_VERSION="5.0.14"
+
+# ==================== 自动获取最新版本 ====================
+get_latest_version() {
+    local ver=""
+    if command -v curl &>/dev/null; then
+        ver=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | \
+              grep '"tag_name"' | head -1 | sed 's/.*"v\?\([^"]*\)".*/\1/')
+    elif command -v wget &>/dev/null; then
+        ver=$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | \
+              grep '"tag_name"' | head -1 | sed 's/.*"v\?\([^"]*\)".*/\1/')
+    fi
+    echo "${ver:-$DEFAULT_VERSION}"
+}
+
+VERSION=$(get_latest_version)
 
 # ==================== 颜色定义 ====================
 RED='\033[31m'

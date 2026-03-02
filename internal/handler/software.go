@@ -752,10 +752,27 @@ echo "✅ $(python3 --version) 安装完成"
 				script = `
 $ErrorActionPreference = "Continue"
 Write-Output "📦 安装 OpenClaw..."
+
+# ---- 检查并自动安装 Node.js ----
 $nodeCheck = Get-Command node -ErrorAction SilentlyContinue
 if (-not $nodeCheck) {
-  Write-Output "❌ 需要先安装 Node.js"
-  exit 1
+  Write-Output "⚠️ 未检测到 Node.js，正在自动安装..."
+  $wingetCheck = Get-Command winget -ErrorAction SilentlyContinue
+  if ($wingetCheck) {
+    Write-Output "📥 通过 winget 安装 Node.js LTS..."
+    winget install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements --silent 2>&1
+    # 刷新 PATH
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH","User")
+    $nodeCheck = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $nodeCheck) {
+      Write-Output "❌ Node.js 自动安装失败，请手动从 https://nodejs.org 下载安装后重试"
+      exit 1
+    }
+    Write-Output "✅ Node.js $(node --version) 安装完成"
+  } else {
+    Write-Output "❌ 未找到 winget，请手动从 https://nodejs.org 下载安装 Node.js 后重试"
+    exit 1
+  }
 }
 
 # Configure npm to use Chinese mirror for faster downloads
