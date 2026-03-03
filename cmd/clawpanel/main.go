@@ -117,15 +117,36 @@ func runServer(stopCh chan struct{}) {
 	sysLog := eventlog.NewSystemLogger(db, wsHub)
 	sysLog.Log("system", "panel.start", "ClawPanel 管理面板已启动")
 
-	// 启动 OneBot11 事件监听器 (监听 NapCat WebSocket 消息并记录到活动日志)
-	evListener := eventlog.NewListener(db, wsHub, "ws://127.0.0.1:3001")
-	evListener.Start()
-	defer evListener.Stop()
+	// 检查 QQ 通道是否启用
+	qqEnabled := false
+	if ocCfg, _ := cfg.ReadOpenClawJSON(); ocCfg != nil {
+		if channels, ok := ocCfg["channels"].(map[string]interface{}); ok {
+			if qqCh, ok := channels["qq"].(map[string]interface{}); ok {
+				if enabled, ok := qqCh["enabled"].(bool); ok && enabled {
+					qqEnabled = true
+				}
+			}
+		}
+	}
 
-	// 启动 NapCat 连接监控
-	napcatMon := monitor.NewNapCatMonitor(cfg, wsHub, sysLog)
-	napcatMon.Start()
-	defer napcatMon.Stop()
+	// 启动 OneBot11 事件监听器 (仅当 QQ 通道启用时)
+	var evListener *eventlog.Listener
+	if qqEnabled {
+		evListener = eventlog.NewListener(db, wsHub, "ws://127.0.0.1:3001")
+		evListener.Start()
+		defer evListener.Stop()
+	}
+
+	// 启动 NapCat 连接监控 (仅当 QQ 通道启用时)
+	var napcatMon *monitor.NapCatMonitor
+	if qqEnabled {
+		napcatMon = monitor.NewNapCatMonitor(cfg, wsHub, sysLog)
+		napcatMon.Start()
+		defer napcatMon.Stop()
+	} else {
+		// 创建空监控器供 API 使用
+		napcatMon = monitor.NewNapCatMonitor(cfg, wsHub, sysLog)
+	}
 
 	// 初始化插件管理器
 	pluginMgr := plugin.NewManager(cfg)

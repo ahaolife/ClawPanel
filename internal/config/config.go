@@ -87,9 +87,12 @@ func Load() (*Config, error) {
 	// 设置默认工作目录（基于 OpenClawDir 的父目录）
 	parentDir := filepath.Dir(cfg.OpenClawDir) // e.g. /home/user/openclaw or C:\Users\xxx\.openclaw -> C:\Users\xxx
 	if cfg.OpenClawWork == "" || !dirExists(cfg.OpenClawWork) {
+		// Try npm global openclaw installation first
+		npmGlobalDir := getNpmGlobalOpenClawDir()
 		cfg.OpenClawWork = findFirstExistingDir(
 			filepath.Join(parentDir, "work"),
 			filepath.Join(parentDir, "openclaw", "work"),
+			filepath.Join(npmGlobalDir, "agents"),
 		)
 		if cfg.OpenClawWork == "" {
 			cfg.OpenClawWork = filepath.Join(parentDir, "work")
@@ -97,9 +100,12 @@ func Load() (*Config, error) {
 	}
 	// 设置默认 App 目录
 	if cfg.OpenClawApp == "" || !dirExists(cfg.OpenClawApp) {
+		// Try npm global openclaw installation first
+		npmGlobalDir := getNpmGlobalOpenClawDir()
 		cfg.OpenClawApp = findFirstExistingDir(
 			filepath.Join(parentDir, "app"),
 			filepath.Join(parentDir, "openclaw", "app"),
+			npmGlobalDir,
 		)
 		if cfg.OpenClawApp == "" {
 			cfg.OpenClawApp = filepath.Join(parentDir, "app")
@@ -263,8 +269,59 @@ func dirExists(path string) bool {
 // findFirstExistingDir returns the first directory path that exists, or "" if none
 func findFirstExistingDir(paths ...string) string {
 	for _, p := range paths {
-		if dirExists(p) {
+		if p != "" && dirExists(p) {
 			return p
+		}
+	}
+	return ""
+}
+
+// getNpmGlobalOpenClawDir returns the npm global openclaw installation directory
+func getNpmGlobalOpenClawDir() string {
+	// Try npm root -g command first
+	if out, err := exec.Command("npm", "root", "-g").Output(); err == nil {
+		npmRoot := strings.TrimSpace(string(out))
+		if npmRoot != "" {
+			openclawDir := filepath.Join(npmRoot, "openclaw")
+			if dirExists(openclawDir) {
+				return openclawDir
+			}
+		}
+	}
+
+	// Fallback: check common npm global paths
+	if runtime.GOOS == "windows" {
+		for _, userHome := range getWindowsUserHomes() {
+			paths := []string{
+				filepath.Join(userHome, "AppData", "Roaming", "npm", "node_modules", "openclaw"),
+			}
+			for _, p := range paths {
+				if dirExists(p) {
+					return p
+				}
+			}
+		}
+		// Check Program Files
+		if dirExists(`C:\Program Files\nodejs\node_modules\openclaw`) {
+			return `C:\Program Files\nodejs\node_modules\openclaw`
+		}
+	} else {
+		// Linux/macOS
+		paths := []string{
+			"/usr/lib/node_modules/openclaw",
+			"/usr/local/lib/node_modules/openclaw",
+		}
+		home, _ := os.UserHomeDir()
+		if home != "" {
+			paths = append(paths,
+				filepath.Join(home, ".npm-global", "lib", "node_modules", "openclaw"),
+				filepath.Join(home, ".local", "lib", "node_modules", "openclaw"),
+			)
+		}
+		for _, p := range paths {
+			if dirExists(p) {
+				return p
+			}
 		}
 	}
 	return ""
