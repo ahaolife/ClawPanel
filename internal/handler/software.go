@@ -22,7 +22,7 @@ type SoftwareInfo struct {
 	Description string `json:"description"`
 	Version     string `json:"version"`
 	Installed   bool   `json:"installed"`
-	Status      string `json:"status"` // installed, not_installed, running, stopped
+	Status      string `json:"status"`   // installed, not_installed, running, stopped
 	Category    string `json:"category"` // runtime, container, service
 	Installable bool   `json:"installable"`
 	Icon        string `json:"icon,omitempty"`
@@ -195,7 +195,7 @@ func detectOpenClawVersion(cfg *config.Config) string {
 			return v
 		}
 	}
-	
+
 	// 2. Try npm global package.json (may fail when running as SYSTEM service)
 	npmRoot := detectCmd("npm", "root", "-g")
 	if npmRoot != "" {
@@ -402,7 +402,12 @@ func DetectOpenClawInstances(cfg *config.Config) gin.HandlerFunc {
 					instances = append(instances, OpenClawInstance{
 						ID: "docker-" + name, Type: "docker", Label: "Docker: " + name,
 						Version: image, Path: name, Active: running,
-						Status: func() string { if running { return "running" }; return "stopped" }(),
+						Status: func() string {
+							if running {
+								return "running"
+							}
+							return "stopped"
+						}(),
 					})
 				}
 			}
@@ -492,26 +497,45 @@ set -e
 export PATH="/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 echo "📦 安装 Node.js (v22 LTS)..."
 
-# --- Helper: install Node.js v22 from official binary tarball ---
+# --- Helper: install Node.js v22 from official binary archive (Linux/macOS) ---
 install_node_tarball() {
   local NODE_VER="v22.14.0"
+  local OS_NAME
+  local PKG_EXT
   local ARCH
+  OS_NAME=$(uname | tr '[:upper:]' '[:lower:]')
+
   case "$(uname -m)" in
     x86_64|amd64) ARCH="x64" ;;
     aarch64|arm64) ARCH="arm64" ;;
     armv7l) ARCH="armv7l" ;;
     *) echo "❌ 不支持的 CPU 架构: $(uname -m)"; exit 1 ;;
   esac
-  local URL="https://nodejs.org/dist/${NODE_VER}/node-${NODE_VER}-linux-${ARCH}.tar.xz"
-  local MIRROR_URL="https://npmmirror.com/mirrors/node/${NODE_VER}/node-${NODE_VER}-linux-${ARCH}.tar.xz"
-  echo "📥 下载 Node.js ${NODE_VER} (${ARCH}) 官方二进制..."
+
+  if [ "$OS_NAME" = "darwin" ]; then
+    if [ "$ARCH" = "armv7l" ]; then
+      echo "❌ macOS 不支持 armv7l 架构"; exit 1
+    fi
+    PKG_EXT="tar.gz"
+  else
+    PKG_EXT="tar.xz"
+  fi
+
+  local FILE="node-${NODE_VER}-${OS_NAME}-${ARCH}.${PKG_EXT}"
+  local URL="https://nodejs.org/dist/${NODE_VER}/${FILE}"
+  local MIRROR_URL="https://npmmirror.com/mirrors/node/${NODE_VER}/${FILE}"
+  echo "📥 下载 Node.js ${NODE_VER} (${OS_NAME}-${ARCH}) 官方二进制..."
   local TMP_DIR=$(mktemp -d)
-  curl -fsSL "$MIRROR_URL" -o "$TMP_DIR/node.tar.xz" 2>/dev/null || \
-  curl -fsSL "$URL" -o "$TMP_DIR/node.tar.xz" || {
+  curl -fsSL "$MIRROR_URL" -o "$TMP_DIR/node.tar" 2>/dev/null || \
+  curl -fsSL "$URL" -o "$TMP_DIR/node.tar" || {
     echo "❌ Node.js 下载失败"; rm -rf "$TMP_DIR"; exit 1
   }
   echo "📦 解压到 /usr/local ..."
-  tar -xJf "$TMP_DIR/node.tar.xz" -C /usr/local --strip-components=1
+  if [ "$PKG_EXT" = "tar.gz" ]; then
+    tar -xzf "$TMP_DIR/node.tar" -C /usr/local --strip-components=1
+  else
+    tar -xJf "$TMP_DIR/node.tar" -C /usr/local --strip-components=1
+  fi
   rm -rf "$TMP_DIR"
   hash -r
 }
@@ -530,11 +554,7 @@ else
   fi
 
   if [ "$(uname)" = "Darwin" ]; then
-    if ! command -v brew &>/dev/null; then
-      echo "❌ macOS 需要先安装 Homebrew: https://brew.sh"; exit 1
-    fi
-    brew install node@22 || brew upgrade node@22 || true
-    brew link --overwrite node@22 || true
+    install_node_tarball
   else
     # Try NodeSource first
     DISTRO_FAMILY=""
@@ -900,29 +920,48 @@ set -e
 echo "📦 安装 OpenClaw..."
 export PATH="/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
-# --- Helper: install Node.js v22 from official binary tarball (works on ANY Linux) ---
+# --- Helper: install Node.js v22 from official binary archive (Linux/macOS) ---
 install_node_tarball() {
   local NODE_VER="v22.14.0"
+  local OS_NAME
+  local PKG_EXT
   local ARCH
+  OS_NAME=$(uname | tr '[:upper:]' '[:lower:]')
+
   case "$(uname -m)" in
     x86_64|amd64) ARCH="x64" ;;
     aarch64|arm64) ARCH="arm64" ;;
     armv7l) ARCH="armv7l" ;;
     *) echo "❌ 不支持的 CPU 架构: $(uname -m)"; exit 1 ;;
   esac
-  local URL="https://nodejs.org/dist/${NODE_VER}/node-${NODE_VER}-linux-${ARCH}.tar.xz"
-  local MIRROR_URL="https://npmmirror.com/mirrors/node/${NODE_VER}/node-${NODE_VER}-linux-${ARCH}.tar.xz"
-  echo "📥 下载 Node.js ${NODE_VER} (${ARCH}) 官方二进制..."
+
+  if [ "$OS_NAME" = "darwin" ]; then
+    if [ "$ARCH" = "armv7l" ]; then
+      echo "❌ macOS 不支持 armv7l 架构"; exit 1
+    fi
+    PKG_EXT="tar.gz"
+  else
+    PKG_EXT="tar.xz"
+  fi
+
+  local FILE="node-${NODE_VER}-${OS_NAME}-${ARCH}.${PKG_EXT}"
+  local URL="https://nodejs.org/dist/${NODE_VER}/${FILE}"
+  local MIRROR_URL="https://npmmirror.com/mirrors/node/${NODE_VER}/${FILE}"
+  echo "📥 下载 Node.js ${NODE_VER} (${OS_NAME}-${ARCH}) 官方二进制..."
   local TMP_DIR=$(mktemp -d)
   # Try China mirror first, then official
-  curl -fsSL "$MIRROR_URL" -o "$TMP_DIR/node.tar.xz" 2>/dev/null || \
-  curl -fsSL "$URL" -o "$TMP_DIR/node.tar.xz" || {
+  curl -fsSL "$MIRROR_URL" -o "$TMP_DIR/node.tar" 2>/dev/null || \
+  curl -fsSL "$URL" -o "$TMP_DIR/node.tar" || {
     echo "❌ Node.js 下载失败"
     rm -rf "$TMP_DIR"
     exit 1
   }
   echo "📦 解压到 /usr/local ..."
-  tar -xJf "$TMP_DIR/node.tar.xz" -C /usr/local --strip-components=1
+  if [ "$PKG_EXT" = "tar.gz" ]; then
+    tar -xzf "$TMP_DIR/node.tar" -C /usr/local --strip-components=1
+  else
+    tar -xJf "$TMP_DIR/node.tar" -C /usr/local --strip-components=1
+  fi
   rm -rf "$TMP_DIR"
   hash -r
   echo "✅ Node.js $(node --version) 安装完成 (官方二进制)"
@@ -947,12 +986,7 @@ if ! node_version_ok; then
   fi
 
   if [ "$(uname)" = "Darwin" ]; then
-    if ! command -v brew &>/dev/null; then
-      echo "❌ macOS 需要先安装 Homebrew: https://brew.sh"
-      exit 1
-    fi
-    brew install node@22 || brew upgrade node@22 || true
-    brew link --overwrite node@22 || true
+    install_node_tarball
   else
     # Try NodeSource first, then fallback to binary tarball
     DISTRO_FAMILY=""
