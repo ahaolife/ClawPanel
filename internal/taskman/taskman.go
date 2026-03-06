@@ -164,10 +164,19 @@ func (m *Manager) RunCommand(task *Task, name string, args ...string) error {
 			}
 		}
 	} else {
-		if os.Getenv("HOME") == "" {
-			if home, err := os.UserHomeDir(); err == nil && home != "" {
-				env = append(env, "HOME="+home)
+		home := os.Getenv("HOME")
+		if home == "" {
+			home, _ = os.UserHomeDir()
+		}
+		if home == "" {
+			if runtime.GOOS == "darwin" {
+				home = "/var/root"
+			} else {
+				home = "/root"
 			}
+		}
+		if os.Getenv("HOME") == "" && home != "" {
+			env = append(env, "HOME="+home)
 		}
 	}
 

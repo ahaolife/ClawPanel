@@ -624,6 +624,7 @@ if ($wingetCheck) {
 				script = `
 set -e
 export PATH="/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+export HOME="${HOME:-/var/root}"
 echo "📦 安装 Docker..."
 if command -v docker &>/dev/null; then
   echo "⚠️ Docker 已安装: $(docker --version)"
