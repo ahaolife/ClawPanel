@@ -26,14 +26,20 @@ export default function CronJobs() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [msg, setMsg] = useState('');
+  const [agentOptions, setAgentOptions] = useState<string[]>([]);
+  const [defaultAgent, setDefaultAgent] = useState('main');
 
   // New job form
   const [newName, setNewName] = useState('');
   const [newCron, setNewCron] = useState('0 9 * * *');
   const [newMessage, setNewMessage] = useState('');
   const [newDeliver, setNewDeliver] = useState(true);
+  const [newSessionTarget, setNewSessionTarget] = useState('');
 
-  useEffect(() => { loadJobs(); }, []);
+  useEffect(() => {
+    loadJobs();
+    loadAgents();
+  }, []);
 
   const loadJobs = async () => {
     setLoading(true);
@@ -46,6 +52,28 @@ export default function CronJobs() {
       }
     } catch { setJobs([]); }
     finally { setLoading(false); }
+  };
+
+  const loadAgents = async () => {
+    try {
+      const r = await api.getAgentsConfig();
+      if (r.ok) {
+        const list = (r.agents?.list || []).map((x: any) => String(x.id || '').trim()).filter(Boolean);
+        const configuredDefaultRaw = String(r.agents?.default || '').trim();
+        const fallbackDefault = list[0] || 'main';
+        const effectiveDefault = configuredDefaultRaw && list.includes(configuredDefaultRaw) ? configuredDefaultRaw : fallbackDefault;
+        const uniq = Array.from(new Set<string>(list.length > 0 ? list : [effectiveDefault]));
+        setAgentOptions(uniq);
+        setDefaultAgent(effectiveDefault);
+        if (!uniq.includes(newSessionTarget)) {
+          setNewSessionTarget(effectiveDefault);
+        }
+      }
+    } catch {
+      setAgentOptions(['main']);
+      setDefaultAgent('main');
+      if (!newSessionTarget) setNewSessionTarget('main');
+    }
   };
 
   const toggleJob = async (id: string) => {
@@ -90,7 +118,7 @@ export default function CronJobs() {
       name: newName.trim(),
       enabled: true,
       schedule: { kind: 'cron', expr: newCron },
-      sessionTarget: 'main',
+      sessionTarget: newSessionTarget || defaultAgent || 'main',
       wakeMode: 'now',
       payload: { kind: 'agentTurn', message: newMessage.trim(), deliver: newDeliver },
       state: {},
@@ -104,6 +132,7 @@ export default function CronJobs() {
       setShowCreate(false);
       setNewName('');
       setNewMessage('');
+      setNewSessionTarget(defaultAgent || 'main');
       setTimeout(() => setMsg(''), 2000);
     } catch {
       loadJobs();
@@ -178,6 +207,19 @@ export default function CronJobs() {
               </div>
               <p className="text-[10px] text-gray-400">{t.cron.cronHelp}</p>
             </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300">{t.cron.sessionTarget}</label>
+            <select
+              value={newSessionTarget}
+              onChange={e => setNewSessionTarget(e.target.value)}
+              className="w-full px-3.5 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 transition-all font-mono"
+            >
+              {agentOptions.map(id => (
+                <option key={id} value={id}>{id}</option>
+              ))}
+            </select>
           </div>
           
           <div className="space-y-1.5">

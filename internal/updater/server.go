@@ -753,7 +753,7 @@ func (s *Server) doOCUpdate() {
 				for _, line := range lines {
 					line = strings.TrimSpace(line)
 					if line != "" {
-						s.ocLog(line)
+						s.ocLog("%s", line)
 						outputMu.Lock()
 						allOutput = append(allOutput, line)
 						outputMu.Unlock()

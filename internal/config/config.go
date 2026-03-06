@@ -7,8 +7,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
+	"time"
+
+	json5 "github.com/titanous/json5"
 )
 
 // Config 应用配置
@@ -313,9 +317,30 @@ func (c *Config) ReadOpenClawJSON() (map[string]interface{}, error) {
 	}
 	var result map[string]interface{}
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, err
+		// 兼容 JSON5（注释、尾逗号等）
+		if err5 := json5.Unmarshal(data, &result); err5 != nil {
+			return nil, fmt.Errorf("解析 openclaw.json 失败(JSON/JSON5): %w", err)
+		}
 	}
 	return result, nil
+}
+
+// ReadQQChannelState returns whether the QQ channel is enabled and its access token.
+func (c *Config) ReadQQChannelState() (bool, string, error) {
+	ocConfig, err := c.ReadOpenClawJSON()
+	if err != nil {
+		return false, "", err
+	}
+
+	channels, _ := ocConfig["channels"].(map[string]interface{})
+	qq, _ := channels["qq"].(map[string]interface{})
+	if qq == nil {
+		return false, "", nil
+	}
+
+	enabled, _ := qq["enabled"].(bool)
+	token, _ := qq["accessToken"].(string)
+	return enabled, strings.TrimSpace(token), nil
 }
 
 // WriteOpenClawJSON 写入 openclaw.json
@@ -328,11 +353,90 @@ func (c *Config) WriteOpenClawJSON(data map[string]interface{}) error {
 		c.OpenClawDir = resolved
 	}
 	cfgPath := filepath.Join(c.OpenClawDir, "openclaw.json")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
+		return err
+	}
+	if err := backupOpenClawBeforeWrite(cfgPath, filepath.Join(c.OpenClawDir, "backups")); err != nil {
+		return err
+	}
+	// 兼容清洗：避免写入新版 OpenClaw 不接受的 legacy 字段。
+	NormalizeOpenClawConfigForWrite(data, c.OpenClawDir)
 	jsonData, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(cfgPath, jsonData, 0644)
+}
+
+func backupOpenClawBeforeWrite(cfgPath, backupDir string) error {
+	info, err := os.Stat(cfgPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("openclaw.json 路径是目录: %s", cfgPath)
+	}
+
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		return err
+	}
+
+	ts := time.Now().Format("20060102T150405.000")
+	backupPath := filepath.Join(backupDir, fmt.Sprintf("pre-edit-%s.json", ts))
+	if err := os.WriteFile(backupPath, raw, 0644); err != nil {
+		return err
+	}
+	return cleanupOldPreEditBackups(backupDir, 10)
+}
+
+func cleanupOldPreEditBackups(backupDir string, keep int) error {
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		return nil
+	}
+
+	type backupFile struct {
+		name string
+		path string
+		mod  time.Time
+	}
+	var files []backupFile
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, "pre-edit-") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, backupFile{
+			name: name,
+			path: filepath.Join(backupDir, name),
+			mod:  info.ModTime(),
+		})
+	}
+	if len(files) <= keep {
+		return nil
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].mod.After(files[j].mod)
+	})
+	for i := keep; i < len(files); i++ {
+		_ = os.Remove(files[i].path)
+	}
+	return nil
 }
 
 func resolveOpenClawDir(current string) string {

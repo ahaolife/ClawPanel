@@ -34,6 +34,46 @@ const KNOWN_PROVIDERS: { id: string; name: string; nameZh?: string; baseUrl: str
 ];
 
 type ConfigTab = 'models' | 'identity' | 'general' | 'version' | 'env' | 'health';
+type ConfigDiffItem = { path: string; before: string; after: string };
+
+function cloneConfig<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value ?? {}));
+}
+
+function stringifyShort(value: any): string {
+  if (value === undefined) return 'undefined';
+  if (value === null) return 'null';
+  if (typeof value === 'string') return value;
+  try {
+    const raw = JSON.stringify(value);
+    if (raw.length > 120) return raw.slice(0, 117) + '...';
+    return raw;
+  } catch {
+    return String(value);
+  }
+}
+
+function buildConfigDiff(before: any, after: any, prefix = ''): ConfigDiffItem[] {
+  const isObj = (v: any) => v && typeof v === 'object' && !Array.isArray(v);
+  if (Array.isArray(before) || Array.isArray(after)) {
+    const b = JSON.stringify(before ?? null);
+    const a = JSON.stringify(after ?? null);
+    if (b === a) return [];
+    return [{ path: prefix || '(root)', before: stringifyShort(before), after: stringifyShort(after) }];
+  }
+  if (!isObj(before) || !isObj(after)) {
+    if (JSON.stringify(before) === JSON.stringify(after)) return [];
+    return [{ path: prefix || '(root)', before: stringifyShort(before), after: stringifyShort(after) }];
+  }
+
+  const keys = Array.from(new Set([...Object.keys(before), ...Object.keys(after)])).sort();
+  let result: ConfigDiffItem[] = [];
+  keys.forEach((k) => {
+    const nextPath = prefix ? `${prefix}.${k}` : k;
+    result = result.concat(buildConfigDiff(before?.[k], after?.[k], nextPath));
+  });
+  return result;
+}
 
 export default function SystemConfig() {
   const { t: i18n } = useI18n();
@@ -69,12 +109,22 @@ export default function SystemConfig() {
   const [restarting, setRestarting] = useState(false);
   const [diagReport, setDiagReport] = useState('');
   const [diagLoading, setDiagLoading] = useState(false);
+  const [originConfig, setOriginConfig] = useState<any>({});
+  const [diffItems, setDiffItems] = useState<ConfigDiffItem[]>([]);
+  const [showDiffPreview, setShowDiffPreview] = useState(false);
 
   useEffect(() => { loadConfig(); }, []);
 
   const loadConfig = async () => {
     setLoading(true);
-    try { const r = await api.getOpenClawConfig(); if (r.ok) setConfig(r.config || {}); }
+    try {
+      const r = await api.getOpenClawConfig();
+      if (r.ok) {
+        const next = r.config || {};
+        setConfig(next);
+        setOriginConfig(cloneConfig(next));
+      }
+    }
     catch {} finally { setLoading(false); }
   };
 
@@ -188,16 +238,90 @@ export default function SystemConfig() {
     updateConfig((clone: any) => {
       const keys = path.split('.');
       let cur = clone;
-      for (let i = 0; i < keys.length - 1; i++) { if (!cur[keys[i]]) cur[keys[i]] = {}; cur = cur[keys[i]]; }
+      for (let i = 0; i < keys.length - 1; i++) {
+        if (!cur[keys[i]] || typeof cur[keys[i]] !== 'object' || Array.isArray(cur[keys[i]])) cur[keys[i]] = {};
+        cur = cur[keys[i]];
+      }
       cur[keys[keys.length - 1]] = value;
     });
   };
 
-  const handleSave = async () => {
+  const normalizeConfigForSave = (input: any) => {
+    const clone = cloneConfig(input || {});
+    const defaults = clone?.agents?.defaults;
+    if (defaults && typeof defaults === 'object') {
+      const model = defaults.model;
+      if (typeof model === 'string') {
+        const primary = model.trim();
+        if (primary) defaults.model = { primary };
+        else delete defaults.model;
+      } else if (model && typeof model === 'object' && !Array.isArray(model)) {
+        if (defaults.contextTokens == null && model.contextTokens != null) {
+          const n = Number(model.contextTokens);
+          if (Number.isFinite(n) && n > 0) defaults.contextTokens = n;
+        }
+        const cleaned: any = {};
+        if (typeof model.primary === 'string' && model.primary.trim()) cleaned.primary = model.primary.trim();
+        if (Array.isArray(model.fallbacks)) {
+          const fb = model.fallbacks.filter((x: any) => typeof x === 'string' && x.trim()).map((x: string) => x.trim());
+          if (fb.length > 0) cleaned.fallbacks = fb;
+        }
+        if (Object.keys(cleaned).length > 0) defaults.model = cleaned;
+        else delete defaults.model;
+      }
+      const compactionMode = defaults?.compaction?.mode;
+      if (compactionMode === 'aggressive') defaults.compaction.mode = 'safeguard';
+      if (compactionMode === 'off') defaults.compaction.mode = 'default';
+    }
+
+    const gateway = clone?.gateway;
+    if (gateway && typeof gateway === 'object') {
+      if (gateway.mode === 'hosted') gateway.mode = 'remote';
+      if ((!gateway.customBindHost || !String(gateway.customBindHost).trim()) && gateway.bindAddress) {
+        gateway.customBindHost = String(gateway.bindAddress).trim();
+      }
+      if ('bindAddress' in gateway) delete gateway.bindAddress;
+    }
+
+    const hooks = clone?.hooks;
+    if (hooks && typeof hooks === 'object') {
+      if ((!hooks.path || !String(hooks.path).trim()) && hooks.basePath) hooks.path = String(hooks.basePath).trim();
+      if ((!hooks.token || !String(hooks.token).trim()) && hooks.secret) hooks.token = hooks.secret;
+      if ('basePath' in hooks) delete hooks.basePath;
+      if ('secret' in hooks) delete hooks.secret;
+    }
+
+    return clone;
+  };
+
+  const setPrimaryModel = (value: string) => {
+    setConfig((prev: any) => {
+      const clone = cloneConfig(prev || {});
+      if (!clone.agents || typeof clone.agents !== 'object') clone.agents = {};
+      if (!clone.agents.defaults || typeof clone.agents.defaults !== 'object') clone.agents.defaults = {};
+      const defaults = clone.agents.defaults;
+      const currentModel = defaults.model;
+      const nextModel =
+        currentModel && typeof currentModel === 'object' && !Array.isArray(currentModel)
+          ? { ...currentModel }
+          : {};
+      if (value) nextModel.primary = value;
+      else delete nextModel.primary;
+      if (Object.keys(nextModel).length > 0) defaults.model = nextModel;
+      else delete defaults.model;
+      return clone;
+    });
+  };
+
+  const doSave = async () => {
     setSaving(true); setMsg('');
     try {
-      await api.updateOpenClawConfig(config);
+      const normalized = normalizeConfigForSave(config);
+      await api.updateOpenClawConfig(normalized);
+      setConfig(normalized);
       setMsg(i18n.sysConfig.saveSuccess);
+      setOriginConfig(cloneConfig(normalized));
+      setShowDiffPreview(false);
       // If on models tab, prompt to restart gateway
       if (tab === 'models') {
         setMsg('✅ 配置已保存！模型配置变更需要重启 OpenClaw 网关才能生效。');
@@ -206,6 +330,17 @@ export default function SystemConfig() {
       setTimeout(() => setMsg(''), 6000);
     } catch (err) { setMsg(i18n.sysConfig.saveFailed + ': ' + String(err)); }
     finally { setSaving(false); }
+  };
+
+  const handleSave = async () => {
+    const diff = buildConfigDiff(originConfig || {}, config || {});
+    if (diff.length === 0) {
+      setMsg('未检测到配置变更');
+      setTimeout(() => setMsg(''), 3000);
+      return;
+    }
+    setDiffItems(diff);
+    setShowDiffPreview(true);
   };
 
   const handleBackup = async () => {
@@ -235,7 +370,8 @@ export default function SystemConfig() {
   if (loading) return <div className="text-center py-12 text-gray-400 text-xs">{i18n.common.loading}</div>;
 
   const providers = config?.models?.providers || {};
-  const primaryModel = config?.agents?.defaults?.model?.primary || '';
+  const primaryModelRaw = config?.agents?.defaults?.model;
+  const primaryModel = typeof primaryModelRaw === 'string' ? primaryModelRaw : (primaryModelRaw?.primary || '');
 
   return (
     <div className="space-y-6">
@@ -316,7 +452,7 @@ export default function SystemConfig() {
               <Brain size={16} className="text-violet-500" /> {i18n.sysConfig.primaryModel}
             </h3>
             <div className="relative">
-              <select value={primaryModel} onChange={e => setVal('agents.defaults.model.primary', e.target.value)}
+              <select value={primaryModel} onChange={e => setPrimaryModel(e.target.value)}
                 className="w-full pl-4 pr-10 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 transition-all font-mono appearance-none cursor-pointer">
                 <option value="">选择主模型...</option>
                 {Object.entries(providers).map(([pid, prov]: [string, any]) => {
@@ -407,8 +543,14 @@ export default function SystemConfig() {
                           updateConfig((clone: any) => {
                           clone.models.providers[newId] = clone.models.providers[pid];
                           delete clone.models.providers[pid];
-                          const primary = clone.agents?.defaults?.model?.primary || '';
+                          const modelCfg = clone.agents?.defaults?.model;
+                          const primary = typeof modelCfg === 'string' ? modelCfg : (modelCfg?.primary || '');
                           if (primary.startsWith(pid + '/')) {
+                            if (!clone.agents) clone.agents = {};
+                            if (!clone.agents.defaults || typeof clone.agents.defaults !== 'object') clone.agents.defaults = {};
+                            if (!clone.agents.defaults.model || typeof clone.agents.defaults.model !== 'object' || Array.isArray(clone.agents.defaults.model)) {
+                              clone.agents.defaults.model = {};
+                            }
                             clone.agents.defaults.model.primary = newId + primary.slice(pid.length);
                           }
                           });
@@ -632,18 +774,17 @@ export default function SystemConfig() {
               ]} getVal={getVal} setVal={setVal} />
               
               <CfgSection title="消息配置" icon={MessageSquare} fields={[
-                { path: 'messages.systemPrompt', label: '系统提示词', type: 'textarea' as const, placeholder: '你是一个有帮助的AI助手...' },
-                { path: 'messages.maxHistoryMessages', label: '最大历史消息数', type: 'number' as const, placeholder: '50' },
-                { path: 'messages.ackReactionScope', label: '确认反应范围', type: 'select' as const, options: ['all', 'group-mentions', 'none'] },
+                { path: 'messages.responsePrefix', label: '回复前缀', type: 'text' as const, placeholder: '[OpenClaw]' },
+                { path: 'session.maintenance.maxEntries', label: '会话条目上限', type: 'number' as const, placeholder: '2000' },
+                { path: 'messages.ackReactionScope', label: '确认反应范围', type: 'select' as const, options: ['all', 'group-mentions', 'group-all', 'direct', 'off', 'none'] },
               ]} getVal={getVal} setVal={setVal} />
             </div>
             
             <div className="space-y-6">
               <CfgSection title="Agent 默认设置" icon={Brain} fields={[
-                { path: 'agents.defaults.model.contextTokens', label: '上下文Token数', type: 'number' as const, placeholder: '200000' },
-                { path: 'agents.defaults.model.maxTokens', label: '最大输出Token', type: 'number' as const, placeholder: '8192' },
+                { path: 'agents.defaults.contextTokens', label: '上下文Token数', type: 'number' as const, placeholder: '200000' },
                 { path: 'agents.defaults.maxConcurrent', label: '最大并发', type: 'number' as const, placeholder: '4' },
-                { path: 'agents.defaults.compaction.mode', label: '压缩模式', type: 'select' as const, options: ['default', 'aggressive', 'off'] },
+                { path: 'agents.defaults.compaction.mode', label: '压缩模式', type: 'select' as const, options: ['default', 'safeguard'] },
                 { path: 'agents.defaults.compaction.maxHistoryShare', label: '历史占比上限', type: 'number' as const, placeholder: '0.5' },
               ]} getVal={getVal} setVal={setVal} />
             </div>
@@ -726,14 +867,41 @@ export default function SystemConfig() {
           <CfgSection title="网关配置" icon={Globe} fields={[
             { path: 'gateway.port', label: '端口', type: 'number' as const, placeholder: '18789' },
             { path: 'gateway.mode', label: '模式', type: 'select' as const, options: ['local', 'remote'] },
-            { path: 'gateway.bind', label: '绑定', type: 'select' as const, options: ['lan', 'localhost', 'all'] },
-            { path: 'gateway.auth.mode', label: '认证模式', type: 'select' as const, options: ['token', 'password'] },
+            { path: 'gateway.bind', label: '绑定', type: 'select' as const, options: ['auto', 'loopback', 'lan', 'tailnet', 'custom'] },
+            { path: 'gateway.customBindHost', label: '自定义绑定地址', type: 'text' as const, placeholder: '0.0.0.0 / 127.0.0.1 / ::1' },
+            { path: 'gateway.auth.mode', label: '认证模式', type: 'select' as const, options: ['none', 'token', 'password', 'trusted-proxy'] },
             { path: 'gateway.auth.token', label: '认证Token', type: 'password' as const },
           ]} getVal={getVal} setVal={setVal} />
+          <CfgSection title="多智能体协同" icon={Users} fields={[
+            { path: 'tools.agentToAgent.enabled', label: '启用 Agent 间委托', type: 'toggle' as const },
+            { path: 'session.agentToAgent.maxPingPongTurns', label: '最大来回委托轮次', type: 'number' as const, placeholder: '4' },
+            { path: 'tools.sessions.visibility', label: '会话可见性', type: 'select' as const, options: ['same-agent', 'all-agents'] },
+          ]} getVal={getVal} setVal={setVal} />
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-5 space-y-2">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-gray-900 dark:text-white">Agent 间委托白名单</h3>
+              <code className="text-[9px] text-gray-400 font-mono bg-gray-50 dark:bg-gray-900 px-1.5 py-0.5 rounded border border-gray-100 dark:border-gray-800">tools.agentToAgent.allow</code>
+            </div>
+            <input
+              value={(() => {
+                const raw = getVal('tools.agentToAgent.allow');
+                if (Array.isArray(raw)) return raw.join(', ');
+                if (typeof raw === 'string') return raw;
+                return '';
+              })()}
+              onChange={e => {
+                const list = e.target.value.split(',').map(x => x.trim()).filter(Boolean);
+                setVal('tools.agentToAgent.allow', list);
+              }}
+              placeholder="例如: *, main->work, work->main"
+              className="w-full px-3.5 py-2.5 text-xs border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 transition-all font-mono"
+            />
+            <p className="text-[11px] text-gray-500">用逗号分隔规则；保存时会写为数组。</p>
+          </div>
           <CfgSection title="Hooks" icon={Webhook} fields={[
             { path: 'hooks.enabled', label: '启用Hooks', type: 'toggle' as const },
-            { path: 'hooks.basePath', label: '基础路径', type: 'text' as const, placeholder: '/hooks' },
-            { path: 'hooks.secret', label: 'Webhook密钥', type: 'password' as const },
+            { path: 'hooks.path', label: '基础路径', type: 'text' as const, placeholder: '/hooks' },
+            { path: 'hooks.token', label: 'Webhook密钥', type: 'password' as const },
           ]} getVal={getVal} setVal={setVal} />
           <CfgSection title="命令配置" icon={Terminal} fields={[
             { path: 'commands.native', label: '原生命令', type: 'select' as const, options: ['auto', 'on', 'off'] },
@@ -747,7 +915,8 @@ export default function SystemConfig() {
           ]} getVal={getVal} setVal={setVal} />
           <SudoPasswordSection />
           <details className="card">
-            <summary className="px-4 py-3 text-xs font-medium text-gray-500 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50">查看原始配置 (JSON)</summary>
+            <summary className="px-4 py-3 text-xs font-medium text-gray-500 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50">高级 JSON 只读预览</summary>
+            <div className="px-4 pt-2 text-[11px] text-gray-400">以下内容为当前编辑态配置快照（只读），保存前会先弹出差异预览。</div>
             <pre className="px-4 pb-4 text-[11px] text-gray-600 dark:text-gray-400 overflow-x-auto max-h-96 overflow-y-auto font-mono">{JSON.stringify(config, null, 2)}</pre>
           </details>
         </div>
@@ -1015,6 +1184,44 @@ export default function SystemConfig() {
               )}
             </>
           )}
+        </div>
+      )}
+
+      {showDiffPreview && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+          <div className="w-full max-w-4xl max-h-[88vh] overflow-hidden rounded-xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 shadow-xl flex flex-col">
+            <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+              <h3 className="text-sm font-bold text-gray-900 dark:text-white">保存前差异预览</h3>
+              <button onClick={() => setShowDiffPreview(false)} className="px-2 py-1 text-xs rounded bg-gray-100 dark:bg-gray-700">关闭</button>
+            </div>
+            <div className="p-4 overflow-y-auto space-y-2">
+              <div className="text-xs text-gray-500">共检测到 {diffItems.length} 项变更，确认后将写入 <code className="font-mono">openclaw.json</code>。</div>
+              {diffItems.slice(0, 200).map((item, idx) => (
+                <div key={idx} className="text-xs border border-gray-100 dark:border-gray-700 rounded-lg p-2">
+                  <div className="font-mono text-violet-600 dark:text-violet-300">{item.path}</div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-1">
+                    <div className="rounded bg-red-50 dark:bg-red-900/20 p-2">
+                      <div className="text-[10px] text-red-500 mb-1">Before</div>
+                      <div className="font-mono text-[11px] break-all text-red-700 dark:text-red-300">{item.before}</div>
+                    </div>
+                    <div className="rounded bg-emerald-50 dark:bg-emerald-900/20 p-2">
+                      <div className="text-[10px] text-emerald-500 mb-1">After</div>
+                      <div className="font-mono text-[11px] break-all text-emerald-700 dark:text-emerald-300">{item.after}</div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {diffItems.length > 200 && (
+                <div className="text-xs text-gray-400">仅展示前 200 项差异，剩余 {diffItems.length - 200} 项未展开。</div>
+              )}
+            </div>
+            <div className="px-5 py-4 border-t border-gray-100 dark:border-gray-700 flex items-center justify-end gap-2">
+              <button onClick={() => setShowDiffPreview(false)} className="px-4 py-2 text-xs rounded bg-gray-100 dark:bg-gray-700">取消</button>
+              <button onClick={doSave} disabled={saving} className="px-4 py-2 text-xs rounded bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50">
+                {saving ? '保存中...' : '确认保存'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

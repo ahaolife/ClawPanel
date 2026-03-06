@@ -456,6 +456,9 @@ func (m *Manager) ensureOpenClawConfig() {
 	}
 
 	changed := created
+	if config.NormalizeOpenClawConfig(cfg) {
+		changed = true
+	}
 
 	// Always ensure gateway.mode = "local" — safe regardless of plugins
 	gw, _ := cfg["gateway"].(map[string]interface{})
