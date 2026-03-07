@@ -205,7 +205,7 @@ func runServer(stopCh chan struct{}) {
 			auth.GET("/openclaw/models", handler.GetModels(cfg))
 			auth.PUT("/openclaw/models", handler.SaveModels(cfg))
 			auth.GET("/openclaw/channels", handler.GetChannels(cfg))
-			auth.PUT("/openclaw/channels/:id", handler.SaveChannel(cfg))
+			auth.PUT("/openclaw/channels/:id", handler.SaveChannel(cfg, procMgr))
 			auth.PUT("/openclaw/plugins/:id", handler.SavePlugin(cfg))
 			auth.POST("/openclaw/toggle-channel", handler.ToggleChannel(cfg, procMgr, napcatMon, sysLog))
 			auth.POST("/openclaw/feishu-variant", handler.SwitchFeishuVariant(cfg, procMgr, sysLog))

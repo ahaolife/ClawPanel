@@ -200,10 +200,26 @@ func GetChannels(cfg *config.Config) gin.HandlerFunc {
 	}
 }
 
+func qqPluginInstalled(cfg *config.Config) bool {
+	for _, candidate := range []string{
+		filepath.Join(cfg.OpenClawDir, "extensions", "qq"),
+		filepath.Join(filepath.Dir(cfg.OpenClawDir), "extensions", "qq"),
+	} {
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
 // SaveChannel 保存通道配置
-func SaveChannel(cfg *config.Config) gin.HandlerFunc {
+func SaveChannel(cfg *config.Config, procMgr *process.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
+		if id == "qq" && !qqPluginInstalled(cfg) {
+			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "QQ 个人号插件未安装，请先安装 QQ 个人号插件后再配置通道"})
+			return
+		}
 		var body map[string]interface{}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "参数错误"})
@@ -229,7 +245,23 @@ func SaveChannel(cfg *config.Config) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"ok": true})
+
+		resp := gin.H{"ok": true}
+		if id == "qq" && procMgr != nil {
+			status := procMgr.GetStatus()
+			if status.Running {
+				if err := procMgr.Restart(); err != nil {
+					resp["message"] = "QQ 配置已保存，但自动重启网关失败，请手动重启 OpenClaw 网关后生效"
+					resp["restartWarning"] = err.Error()
+				} else {
+					resp["message"] = "QQ 配置已保存，并已自动重启网关使配置生效"
+					resp["restarted"] = true
+				}
+			} else {
+				resp["message"] = "QQ 配置已保存；OpenClaw 网关下次启动时生效"
+			}
+		}
+		c.JSON(http.StatusOK, resp)
 	}
 }
 
@@ -363,6 +395,10 @@ func ToggleChannel(cfg *config.Config, procMgr *process.Manager, napcatMon *moni
 		}
 		if err := c.ShouldBindJSON(&req); err != nil || req.ChannelID == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "channelId required"})
+			return
+		}
+		if req.ChannelID == "qq" && !qqPluginInstalled(cfg) {
+			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "QQ 个人号插件未安装，请先安装 QQ 个人号插件"})
 			return
 		}
 

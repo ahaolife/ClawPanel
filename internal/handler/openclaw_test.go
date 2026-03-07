@@ -130,3 +130,73 @@ func TestPatchModelsJSONForAgentUsesConfiguredAgentDir(t *testing.T) {
 		t.Fatalf("expected compat.supportsDeveloperRole to be forced false")
 	}
 }
+
+func TestSaveChannelRejectsQQWhenPluginMissing(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	r := gin.New()
+	r.PUT("/openclaw/channels/:id", SaveChannel(cfg, nil))
+
+	body := []byte(`{"enabled":true,"wsUrl":"ws://127.0.0.1:3001"}`)
+	req := httptest.NewRequest(http.MethodPut, "/openclaw/channels/qq", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestToggleChannelRejectsQQWhenPluginMissing(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	r := gin.New()
+	r.PUT("/openclaw/channels/toggle", ToggleChannel(cfg, nil, nil))
+
+	body := []byte(`{"channelId":"qq","enabled":true}`)
+	req := httptest.NewRequest(http.MethodPut, "/openclaw/channels/toggle", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSaveChannelQQReturnsMessageWithoutProcessManager(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "extensions", "qq"), 0755); err != nil {
+		t.Fatalf("mkdir qq extension: %v", err)
+	}
+	cfg := &config.Config{OpenClawDir: dir}
+	r := gin.New()
+	r.PUT("/openclaw/channels/:id", SaveChannel(cfg, nil))
+
+	body := []byte(`{"enabled":true,"wsUrl":"ws://127.0.0.1:3001","notifications":{"antiRecall":false}}`)
+	req := httptest.NewRequest(http.MethodPut, "/openclaw/channels/qq", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if ok, _ := resp["ok"].(bool); !ok {
+		t.Fatalf("expected ok response, got %#v", resp)
+	}
+}

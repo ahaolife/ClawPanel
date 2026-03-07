@@ -1820,24 +1820,25 @@ function SoftwareEnvironment({ envInfo, onRefresh }: { envInfo: any; onRefresh: 
             </h3>
             <div className="space-y-3">
               {items.map(sw => {
-                const installed = (sw.value && !sw.value.includes('not installed') && !sw.value.includes('not found')) || sw.status === 'running' || sw.status === 'exited';
+                const pluginMissing = sw.status === 'plugin_missing';
+                const installed = pluginMissing || (sw.value && !sw.value.includes('not installed') && !sw.value.includes('not found')) || sw.status === 'running' || sw.status === 'exited';
                 const isRunning = sw.status === 'running';
                 const installable = sw.installable !== false && !installed;
                 return (
                   <div key={sw.id} className="flex items-center gap-4 px-4 py-3 rounded-xl bg-gray-50 dark:bg-gray-900/50 border border-gray-100 dark:border-gray-800 hover:border-violet-200 dark:hover:border-violet-800 transition-colors">
-                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${installed ? (isRunning ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600' : 'bg-blue-100 dark:bg-blue-900/30 text-blue-600') : 'bg-gray-200 dark:bg-gray-700 text-gray-400'}`}>
-                      {installed ? <CheckCircle size={16} /> : <AlertTriangle size={16} />}
+                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${pluginMissing ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600' : installed ? (isRunning ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600' : 'bg-blue-100 dark:bg-blue-900/30 text-blue-600') : 'bg-gray-200 dark:bg-gray-700 text-gray-400'}`}>
+                      {installed && !pluginMissing ? <CheckCircle size={16} /> : <AlertTriangle size={16} />}
                     </div>
                     <div className="w-32 shrink-0">
                       <span className="text-sm font-bold text-gray-900 dark:text-white">{sw.name}</span>
                       {sw.required && <span className="block text-[10px] text-amber-600 dark:text-amber-500 font-medium">必需组件</span>}
                     </div>
                     <span className="text-xs text-gray-600 dark:text-gray-400 font-mono flex-1 truncate bg-white dark:bg-gray-800 px-2 py-1 rounded border border-gray-100 dark:border-gray-700">
-                      {sw.value || (installed ? 'Docker 容器' : '未安装')}
+                      {pluginMissing ? '已安装 NapCat，但缺少 QQ 个人号插件' : (sw.value || (installed ? 'Docker 容器' : '未安装'))}
                     </span>
                     {installed ? (
-                      <span className={`text-xs font-medium px-2.5 py-1 rounded-lg whitespace-nowrap ${isRunning ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400' : 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'}`}>
-                        {isRunning ? '运行中' : (sw.status === 'exited' ? '已停止' : '已安装')}
+                      <span className={`text-xs font-medium px-2.5 py-1 rounded-lg whitespace-nowrap ${pluginMissing ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400' : isRunning ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400' : 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'}`}>
+                        {pluginMissing ? '缺少插件' : (isRunning ? '运行中' : (sw.status === 'exited' ? '已停止' : '已安装'))}
                       </span>
                     ) : installable ? (
                       <button

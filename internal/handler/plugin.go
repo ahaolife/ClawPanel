@@ -12,6 +12,11 @@ func GetPluginList(pm *plugin.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		installed := pm.ListInstalled()
 		reg := pm.GetRegistry()
+		if len(reg.Plugins) == 0 {
+			if fetched, err := pm.FetchRegistry(); err == nil && fetched != nil {
+				reg = fetched
+			}
+		}
 
 		c.JSON(http.StatusOK, gin.H{
 			"ok":        true,

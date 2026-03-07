@@ -23,10 +23,22 @@ type SoftwareInfo struct {
 	Description string `json:"description"`
 	Version     string `json:"version"`
 	Installed   bool   `json:"installed"`
-	Status      string `json:"status"`   // installed, not_installed, running, stopped
+	Status      string `json:"status"`   // installed, not_installed, running, stopped, plugin_missing
 	Category    string `json:"category"` // runtime, container, service
 	Installable bool   `json:"installable"`
 	Icon        string `json:"icon,omitempty"`
+}
+
+func hasQQPlugin(cfg *config.Config) bool {
+	for _, candidate := range []string{
+		filepath.Join(cfg.OpenClawDir, "extensions", "qq"),
+		filepath.Join(filepath.Dir(cfg.OpenClawDir), "extensions", "qq"),
+	} {
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // OpenClawInstance 检测到的 OpenClaw 实例
@@ -149,6 +161,9 @@ func GetSoftwareList(cfg *config.Config) gin.HandlerFunc {
 			if napcatExists {
 				napcatVer = "Docker"
 			}
+		}
+		if napcatExists && !hasQQPlugin(cfg) {
+			napcatStatus = "plugin_missing"
 		}
 		list = append(list, SoftwareInfo{
 			ID: "napcat", Name: "NapCat (QQ个人号)", Description: "QQ 机器人 OneBot11 协议",
@@ -1108,11 +1123,22 @@ if [ ! -d "$QQ_EXT_DIR" ]; then
   echo "📥 安装 QQ (OneBot11) 通道插件..."
   mkdir -p "$OPENCLAW_DIR/extensions"
   QQ_TGZ=$(mktemp)
-  curl -fsSL "http://39.102.53.188:16198/clawpanel/bin/qq-plugin.tgz" -o "$QQ_TGZ" 2>/dev/null && \
-  tar xzf "$QQ_TGZ" -C "$OPENCLAW_DIR/extensions/" && \
-  chown -R root:root "$QQ_EXT_DIR" 2>/dev/null && \
-  echo "✅ QQ 插件安装完成" || echo "⚠️ QQ 插件安装失败（可稍后手动安装）"
+  if curl -fsSL "http://39.102.53.188:16198/clawpanel/bin/qq-plugin.tgz" -o "$QQ_TGZ" 2>/dev/null && \
+     tar xzf "$QQ_TGZ" -C "$OPENCLAW_DIR/extensions/" && \
+     [ -d "$QQ_EXT_DIR" ]; then
+    chown -R root:root "$QQ_EXT_DIR" 2>/dev/null || true
+    echo "✅ QQ 插件安装完成"
+  else
+    echo "❌ QQ 个人号插件安装失败，无法继续配置 QQ 通道"
+    rm -f "$QQ_TGZ"
+    exit 1
+  fi
   rm -f "$QQ_TGZ"
+fi
+
+if [ ! -d "$QQ_EXT_DIR" ]; then
+  echo "❌ QQ 个人号插件未安装，无法继续安装 NapCat"
+  exit 1
 fi
 
 # 6. Ensure gateway.mode=local and channels.qq in openclaw.json
@@ -1521,8 +1547,30 @@ Write-Output "📦 安装 NapCat (QQ个人号) Windows Shell 版本..."
 Write-Output "无需 Docker，直接运行 NapCat Shell"
 
 $INSTALL_DIR = "%s"
+$OPENCLAW_DIR = "%s"
+$QQ_PLUGIN_DIR = Join-Path $OPENCLAW_DIR "extensions\qq"
 if (-not (Test-Path $INSTALL_DIR)) {
   New-Item -ItemType Directory -Force -Path $INSTALL_DIR | Out-Null
+}
+
+if (-not (Test-Path $QQ_PLUGIN_DIR)) {
+  Write-Output "📥 安装 QQ (OneBot11) 通道插件..."
+  New-Item -ItemType Directory -Force -Path (Split-Path $QQ_PLUGIN_DIR -Parent) | Out-Null
+  $QQ_TGZ = Join-Path $env:TEMP "qq-plugin.tgz"
+  try {
+    Invoke-WebRequest -Uri "http://39.102.53.188:16198/clawpanel/bin/qq-plugin.tgz" -OutFile $QQ_TGZ -UseBasicParsing -TimeoutSec 60
+    tar -xzf $QQ_TGZ -C (Split-Path $QQ_PLUGIN_DIR -Parent)
+  } catch {
+    Write-Output "❌ QQ 个人号插件安装失败，无法继续安装 NapCat"
+    exit 1
+  } finally {
+    Remove-Item -Force $QQ_TGZ -ErrorAction SilentlyContinue
+  }
+}
+
+if (-not (Test-Path $QQ_PLUGIN_DIR)) {
+  Write-Output "❌ QQ 个人号插件未安装，无法继续安装 NapCat"
+  exit 1
 }
 
 Write-Output "📥 下载 NapCat Shell Windows OneKey 版..."
@@ -1640,7 +1688,7 @@ if ($shellDir -ne "") {
 } else {
   Write-Output "⚠️ NapCat 已下载但未找到启动文件，请手动检查: $INSTALL_DIR"
 }
-`, installDir)
+`, installDir, cfg.OpenClawDir)
 }
 
 func buildWeChatInstallScript(cfg *config.Config) string {

@@ -144,6 +144,10 @@ function getFeishuPluginEntryId(ocConfig: any): string {
   return 'feishu';
 }
 
+function isQQPluginInstalled(installedPlugins: any[]) {
+  return installedPlugins.some((p: any) => p.id === 'qq');
+}
+
 // Determine channel status: 'enabled' (green), 'configured' (red/orange), 'unconfigured' (gray)
 function getChannelStatus(ch: ChannelDef, ocConfig: any): 'enabled' | 'configured' | 'unconfigured' {
   const chConf = ocConfig?.channels?.[ch.id] || {};
@@ -368,7 +372,8 @@ export default function Channels() {
           }
         }
       }
-      await api.updateChannel(currentDef.id, chData);
+      const r = await api.updateChannel(currentDef.id, chData);
+      if (!r.ok) throw new Error(r.error || t.channels.saveFailed);
       // 飞书特殊处理：保存时操作当前活跃变体的 plugin entry
       if (currentDef.id === 'feishu') {
         const entryId = getFeishuPluginEntryId(ocConfig);
@@ -376,9 +381,9 @@ export default function Channels() {
       } else if (currentDef.type === 'plugin') {
         await api.updatePlugin(currentDef.id, { enabled: chData.enabled || false });
       }
-      setMsg(t.channels.saveSuccess);
+      setMsg(r.message || t.channels.saveSuccess);
       reload();
-      setTimeout(() => setMsg(''), 2000);
+      setTimeout(() => setMsg(''), 5000);
     } catch (err) { setMsg(t.channels.saveFailed + ': ' + String(err)); }
     finally { setSaving(false); }
   };
@@ -394,7 +399,11 @@ export default function Channels() {
       cur[keys[keys.length - 1]] = !cur[keys[keys.length - 1]];
     }
     try {
-      await api.updateChannel(channelId, chConf);
+      const r = await api.updateChannel(channelId, chConf);
+      if (channelId === 'qq' && r?.message) {
+        setMsg(r.message);
+        setTimeout(() => setMsg(''), 5000);
+      }
       reload();
     } catch {}
   };
@@ -660,8 +669,37 @@ export default function Channels() {
 
         {/* Channel config */}
         <div className="lg:col-span-3 space-y-6">
+          {/* QQ plugin not installed overlay */}
+          {currentDef && currentDef.id === 'qq' && !isQQPluginInstalled(installedPlugins) && (
+            <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8 text-center space-y-4">
+              <div className="w-16 h-16 mx-auto rounded-2xl bg-amber-50 dark:bg-amber-900/20 flex items-center justify-center">
+                <AlertTriangle size={32} className="text-amber-500" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-gray-900 dark:text-white">QQ 个人号插件未安装</h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  安装 QQ (NapCat) 前会先安装 QQ 个人号插件。当前未检测到插件，请重新执行 NapCat 安装；若仍失败，请检查加速源或手动前往插件中心安装 `qq` 插件。
+                </p>
+              </div>
+              <div className="flex items-center justify-center gap-3 flex-wrap">
+                <button
+                  onClick={() => handleInstallContainer('napcat')}
+                  disabled={installingSw !== null}
+                  className="inline-flex items-center gap-2 px-6 py-3 text-sm font-medium rounded-xl bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 transition-all shadow-lg shadow-violet-200 dark:shadow-none hover:shadow-xl"
+                >
+                  {installingSw ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+                  {installingSw ? '安装中...' : '重新安装 QQ (NapCat)'}
+                </button>
+                <a href="#/plugins" className="inline-flex items-center gap-2 px-6 py-3 text-sm font-medium rounded-xl bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-100 hover:bg-gray-200 dark:hover:bg-gray-600 transition-all">
+                  <Package size={16} />
+                  前往插件中心
+                </a>
+              </div>
+            </div>
+          )}
+
           {/* QQ NapCat not installed overlay */}
-          {currentDef && currentDef.id === 'qq' && !isContainerInstalled('napcat') && softwareList.length > 0 && (
+          {currentDef && currentDef.id === 'qq' && isQQPluginInstalled(installedPlugins) && !isContainerInstalled('napcat') && softwareList.length > 0 && (
             <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8 text-center space-y-4">
               <div className="w-16 h-16 mx-auto rounded-2xl bg-gray-100 dark:bg-gray-700 flex items-center justify-center">
                 <Package size={32} className="text-gray-400" />
@@ -721,7 +759,7 @@ export default function Channels() {
           )}
 
           {currentDef && !(
-            (currentDef.id === 'qq' && !isContainerInstalled('napcat') && softwareList.length > 0) ||
+            (currentDef.id === 'qq' && (!isQQPluginInstalled(installedPlugins) || (!isContainerInstalled('napcat') && softwareList.length > 0))) ||
             (currentDef.type === 'plugin' && currentDef.id !== 'qq' && !isPluginInstalled(currentDef.id))
           ) && (
             <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-6 space-y-6">
