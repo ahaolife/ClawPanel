@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -52,11 +53,33 @@ func preserveHiddenOpenClawFields(dst, src map[string]interface{}) {
 	if dst == nil || src == nil {
 		return
 	}
-	if tools, ok := src["tools"]; ok {
-		dst["tools"] = tools
+	if srcTools, ok := src["tools"].(map[string]interface{}); ok {
+		dstTools, _ := dst["tools"].(map[string]interface{})
+		if dstTools == nil {
+			dstTools = map[string]interface{}{}
+		}
+		preserveMissingMapFields(dstTools, srcTools)
+		if len(dstTools) > 0 {
+			dst["tools"] = dstTools
+		}
+	} else if tools, ok := src["tools"]; ok {
+		if _, exists := dst["tools"]; !exists {
+			dst["tools"] = tools
+		}
 	}
-	if session, ok := src["session"]; ok {
-		dst["session"] = session
+	if srcSession, ok := src["session"].(map[string]interface{}); ok {
+		dstSession, _ := dst["session"].(map[string]interface{})
+		if dstSession == nil {
+			dstSession = map[string]interface{}{}
+		}
+		preserveMissingMapFields(dstSession, srcSession)
+		if len(dstSession) > 0 {
+			dst["session"] = dstSession
+		}
+	} else if session, ok := src["session"]; ok {
+		if _, exists := dst["session"]; !exists {
+			dst["session"] = session
+		}
 	}
 	if srcCron, ok := src["cron"].(map[string]interface{}); ok {
 		dstCron, _ := dst["cron"].(map[string]interface{})
@@ -64,8 +87,28 @@ func preserveHiddenOpenClawFields(dst, src map[string]interface{}) {
 			if dstCron == nil {
 				dstCron = map[string]interface{}{}
 			}
-			dstCron["jobs"] = jobs
+			if _, exists := dstCron["jobs"]; !exists {
+				dstCron["jobs"] = jobs
+			}
 			dst["cron"] = dstCron
+		}
+	}
+}
+
+func preserveMissingMapFields(dst, src map[string]interface{}) {
+	if dst == nil || src == nil {
+		return
+	}
+	for key, srcVal := range src {
+		dstVal, exists := dst[key]
+		if !exists {
+			dst[key] = srcVal
+			continue
+		}
+		srcMap, srcIsMap := srcVal.(map[string]interface{})
+		dstMap, dstIsMap := dstVal.(map[string]interface{})
+		if srcIsMap && dstIsMap {
+			preserveMissingMapFields(dstMap, srcMap)
 		}
 	}
 }
@@ -104,6 +147,10 @@ func SaveOpenClawConfig(cfg *config.Config) gin.HandlerFunc {
 		normalizeOpenClawModelAPIs(ocCfg)
 		syncAllowedModels(ocCfg)
 		preserveHiddenOpenClawFields(ocCfg, existingCfg)
+		if err := validateOpenClawNumericConfig(ocCfg); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": err.Error()})
+			return
+		}
 
 		if err := cfg.WriteOpenClawJSON(ocCfg); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
@@ -238,6 +285,9 @@ func SaveChannel(cfg *config.Config, procMgr *process.Manager) gin.HandlerFunc {
 		if id == "qq" {
 			body = normalizeQQChannelConfig(body)
 		}
+		if id == "feishu" {
+			body = normalizeFeishuChannelConfig(body)
+		}
 		channels[id] = body
 		ocConfig["channels"] = channels
 
@@ -314,6 +364,149 @@ func normalizeQQChannelConfig(body map[string]interface{}) map[string]interface{
 		delete(body, "autoApproveGroup")
 	}
 
+	return body
+}
+
+func normalizeFeishuChannelConfig(body map[string]interface{}) map[string]interface{} {
+	if body == nil {
+		return map[string]interface{}{}
+	}
+	delete(body, "dmScope")
+	if raw, exists := body["requireMention"]; exists {
+		switch v := raw.(type) {
+		case string:
+			switch trimmed := strings.TrimSpace(v); trimmed {
+			case "":
+				delete(body, "requireMention")
+			case "true":
+				body["requireMention"] = true
+			case "false":
+				body["requireMention"] = false
+			default:
+				body["requireMention"] = trimmed
+			}
+		}
+	}
+	if raw, exists := body["groupAllowFrom"]; exists {
+		switch v := raw.(type) {
+		case string:
+			parts := strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == '，' })
+			items := make([]interface{}, 0, len(parts))
+			for _, part := range parts {
+				trimmed := strings.TrimSpace(part)
+				if trimmed != "" {
+					items = append(items, trimmed)
+				}
+			}
+			if len(items) > 0 {
+				body["groupAllowFrom"] = items
+			} else {
+				delete(body, "groupAllowFrom")
+			}
+		case []interface{}:
+			items := make([]interface{}, 0, len(v))
+			for _, item := range v {
+				trimmed := strings.TrimSpace(toString(item))
+				if trimmed != "" {
+					items = append(items, trimmed)
+				}
+			}
+			if len(items) > 0 {
+				body["groupAllowFrom"] = items
+			} else {
+				delete(body, "groupAllowFrom")
+			}
+		}
+	}
+	groupPolicy := strings.TrimSpace(toString(body["groupPolicy"]))
+	if groupPolicy != "" {
+		body["groupPolicy"] = groupPolicy
+	} else {
+		delete(body, "groupPolicy")
+	}
+	if groupPolicy != "allowlist" {
+		delete(body, "groupAllowFrom")
+	}
+	dmPolicy := strings.TrimSpace(toString(body["dmPolicy"]))
+	if dmPolicy != "" {
+		body["dmPolicy"] = dmPolicy
+	} else {
+		delete(body, "dmPolicy")
+	}
+	topAppID := strings.TrimSpace(toString(body["appId"]))
+	if topAppID != "" {
+		body["appId"] = topAppID
+	} else {
+		delete(body, "appId")
+	}
+	topAppSecret := strings.TrimSpace(toString(body["appSecret"]))
+	if topAppSecret != "" {
+		body["appSecret"] = topAppSecret
+	} else {
+		delete(body, "appSecret")
+	}
+	defaultAccount := strings.TrimSpace(toString(body["defaultAccount"]))
+	rawAccounts, _ := body["accounts"].(map[string]interface{})
+	normalizedAccounts := map[string]interface{}{}
+	accountIDs := make([]string, 0, len(rawAccounts))
+	for rawID, rawEntry := range rawAccounts {
+		accountID := strings.TrimSpace(rawID)
+		if accountID == "" {
+			continue
+		}
+		entry, _ := rawEntry.(map[string]interface{})
+		if entry == nil {
+			entry = map[string]interface{}{}
+		}
+		nextEntry := map[string]interface{}{}
+		if appID := strings.TrimSpace(toString(entry["appId"])); appID != "" {
+			nextEntry["appId"] = appID
+		}
+		if appSecret := strings.TrimSpace(toString(entry["appSecret"])); appSecret != "" {
+			nextEntry["appSecret"] = appSecret
+		}
+		if len(nextEntry) > 0 || accountID == defaultAccount {
+			normalizedAccounts[accountID] = nextEntry
+			accountIDs = append(accountIDs, accountID)
+		}
+	}
+	sort.Strings(accountIDs)
+	if defaultAccount == "" {
+		if _, ok := normalizedAccounts["default"]; ok {
+			defaultAccount = "default"
+		} else if len(accountIDs) > 0 {
+			defaultAccount = accountIDs[0]
+		}
+	}
+	if defaultAccount != "" {
+		entry, _ := normalizedAccounts[defaultAccount].(map[string]interface{})
+		if entry == nil {
+			entry = map[string]interface{}{}
+		}
+		if _, ok := entry["appId"]; !ok && topAppID != "" {
+			entry["appId"] = topAppID
+		}
+		if _, ok := entry["appSecret"]; !ok && topAppSecret != "" {
+			entry["appSecret"] = topAppSecret
+		}
+		if len(entry) > 0 {
+			normalizedAccounts[defaultAccount] = entry
+		}
+		if appID := strings.TrimSpace(toString(entry["appId"])); appID != "" {
+			body["appId"] = appID
+		}
+		if appSecret := strings.TrimSpace(toString(entry["appSecret"])); appSecret != "" {
+			body["appSecret"] = appSecret
+		}
+		body["defaultAccount"] = defaultAccount
+	} else {
+		delete(body, "defaultAccount")
+	}
+	if len(normalizedAccounts) > 0 {
+		body["accounts"] = normalizedAccounts
+	} else {
+		delete(body, "accounts")
+	}
 	return body
 }
 
@@ -405,15 +598,6 @@ func ToggleChannel(cfg *config.Config, procMgr *process.Manager, napcatMon *moni
 		channelConfigKey := req.ChannelID
 		pluginEntryID := req.ChannelID
 		channelLabelKey := req.ChannelID
-		if req.ChannelID == "feishu-official" {
-			channelConfigKey = "feishu"
-			pluginEntryID = "feishu-openclaw-plugin"
-			channelLabelKey = "feishu-official"
-		} else if req.ChannelID == "feishu-community" {
-			channelConfigKey = "feishu"
-			pluginEntryID = "feishu"
-			channelLabelKey = "feishu-community"
-		}
 
 		ocConfig, _ := cfg.ReadOpenClawJSON()
 		if ocConfig == nil {
@@ -461,21 +645,6 @@ func ToggleChannel(cfg *config.Config, procMgr *process.Manager, napcatMon *moni
 				otherEntry["enabled"] = false
 				entries[otherID] = otherEntry
 			}
-		} else if channelID == "feishu-official" || channelID == "feishu-community" {
-			pe, _ := entries[pluginEntryID].(map[string]interface{})
-			if pe == nil {
-				pe = map[string]interface{}{}
-			}
-			pe["enabled"] = req.Enabled
-			entries[pluginEntryID] = pe
-			otherID := "feishu"
-			if pluginEntryID == "feishu" {
-				otherID = "feishu-openclaw-plugin"
-			}
-			if otherEntry, ok := entries[otherID].(map[string]interface{}); ok {
-				otherEntry["enabled"] = false
-				entries[otherID] = otherEntry
-			}
 		} else {
 			pe, _ := entries[pluginEntryID].(map[string]interface{})
 			if pe == nil {
@@ -507,7 +676,6 @@ func ToggleChannel(cfg *config.Config, procMgr *process.Manager, napcatMon *moni
 
 		channelNames := map[string]string{
 			"qq": "QQ (NapCat)", "wechat": "微信", "feishu": "飞书",
-			"feishu-official": "飞书（官方版）", "feishu-community": "飞书（社区版）",
 			"qqbot": "QQ Bot", "dingtalk": "钉钉", "wecom": "企业微信",
 		}
 		label := channelNames[channelLabelKey]

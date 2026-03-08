@@ -140,6 +140,28 @@ export const mockApi = {
   },
   getOpenClawConfig: async () => { await delay(200); return { ok: true, config: JSON.parse(JSON.stringify(FAKE_CONFIG)) }; },
   updateOpenClawConfig: async (_config: any) => { await delay(300); return { ok: true }; },
+  getFeishuDMDiagnosis: async () => {
+    await delay(120);
+    return {
+      ok: true,
+      diagnosis: {
+        configuredDmScope: 'per-account-channel-peer',
+        effectiveDmScope: 'per-account-channel-peer',
+        recommendedDmScope: 'per-account-channel-peer',
+        defaultAgent: 'main',
+        accountCount: 2,
+        accountIds: ['default', 'ops'],
+        defaultAccount: 'default',
+        dmPolicy: 'pairing',
+        threadSession: true,
+        sessionIndexExists: true,
+        feishuSessionCount: 3,
+        feishuSessionKeys: ['agent:main:feishu:default:u_123', 'agent:main:feishu:ops:u_456'],
+        hasSharedMainSessionKey: false,
+        mainSessionKey: 'agent:main:main',
+      },
+    };
+  },
   getAgentsConfig: async () => { await delay(150); return { ok: true, agents: JSON.parse(JSON.stringify(FAKE_AGENTS)) }; },
   createAgent: async (_agent: any) => { await delay(200); return { ok: true }; },
   updateAgent: async (_id: string, _agent: any) => { await delay(200); return { ok: true }; },

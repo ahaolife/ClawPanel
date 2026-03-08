@@ -192,6 +192,40 @@ Authorization: Bearer <token>
 ```
 
 > v5.1.0+：配置写入前会自动备份到 `OPENCLAW_DIR/backups/pre-edit-*.json`，并保留最近 10 份。
+>
+> 当前还会校验以下关键字段：
+> - `agents.defaults.contextTokens` 必须为正整数
+> - `agents.defaults.maxConcurrent` 必须为正整数
+> - `agents.defaults.compaction.maxHistoryShare` 必须位于 `0..1`
+> - `session.maintenance.maxEntries` 必须为正整数
+> - `session.agentToAgent.maxPingPongTurns` 必须为正整数
+> - `gateway.port` 必须位于 `1..65535`
+> - `session.dmScope` 仅允许：`main` / `per-peer` / `per-channel-peer` / `per-account-channel-peer`
+
+### GET `/api/openclaw/feishu-dm-diagnosis`
+获取飞书私聊隔离诊断信息，用于检查多账号、默认账号与 session key 是否存在串会话风险。
+
+**响应示例：**
+```json
+{
+  "ok": true,
+  "diagnosis": {
+    "configuredDmScope": "per-account-channel-peer",
+    "effectiveDmScope": "per-account-channel-peer",
+    "recommendedDmScope": "per-account-channel-peer",
+    "defaultAgent": "main",
+    "accountCount": 2,
+    "accountIds": ["default", "ops"],
+    "defaultAccount": "default",
+    "dmPolicy": "pairing",
+    "threadSession": true,
+    "sessionIndexExists": true,
+    "feishuSessionCount": 3,
+    "hasSharedMainSessionKey": false,
+    "mainSessionKey": "agent:main:main"
+  }
+}
+```
 
 ### GET `/api/openclaw/agents`
 获取多智能体配置与统计信息（`defaults` / `default` / `list` / `bindings`）。
@@ -216,6 +250,11 @@ Authorization: Bearer <token>
 
 ### PUT `/api/openclaw/agents/:id`
 更新指定 Agent（`id` 不可修改）。
+
+> Agent 保存时也会校验：
+> - `contextTokens` 必须为正整数
+> - `compaction.maxHistoryShare` 必须位于 `0..1`
+> - 传入 `null` 的字段会从目标 Agent 配置中删除，而不是写成 JSON `null`
 
 ### DELETE `/api/openclaw/agents/:id?preserveSessions=true`
 删除 Agent，可选保留该 Agent 的 sessions 文件。
@@ -266,6 +305,8 @@ Authorization: Bearer <token>
 
 > v5.1.0+：预览命中遵循“更具体规则优先”而非仅配置顺序。优先级：
 > `sender > peer > parentPeer > guildId+roles > guildId > teamId > accountId > accountId:* > channel > default`。
+>
+> 对于支持多账号且配置了 `defaultAccount` 的渠道（如飞书），当预览 `meta` 未显式填写 `accountId` 时，后端会自动按该渠道默认账号补全后再匹配，保证预览与真实路由一致。
 
 ### GET `/api/openclaw/models`
 获取模型配置。
@@ -278,6 +319,13 @@ Authorization: Bearer <token>
 
 ### PUT `/api/openclaw/channels/:id`
 更新指定通道配置。
+
+> 飞书通道保存时会自动规范化：
+> - 清理遗留 `channels.feishu.dmScope`
+> - `requireMention` 的字符串值会归一化为布尔或 `open`
+> - `groupAllowFrom` 文本会转换为数组
+> - 非 `allowlist` 策略下会自动移除 `groupAllowFrom`
+> - `defaultAccount` 会与顶层 `appId` / `appSecret` 做兼容镜像
 
 ### PUT `/api/openclaw/plugins/:id`
 更新指定插件配置（技能中心启用/禁用）。

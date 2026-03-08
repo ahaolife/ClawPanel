@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { useOutletContext } from 'react-router-dom';
+import { useOutletContext, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import {
   Save, RefreshCw, ChevronDown, ChevronRight,
@@ -79,6 +79,7 @@ function buildConfigDiff(before: any, after: any, prefix = ''): ConfigDiffItem[]
 export default function SystemConfig() {
   const { t: i18n } = useI18n();
   const { uiMode } = (useOutletContext() as { uiMode?: 'modern' }) || {};
+  const [searchParams] = useSearchParams();
   const modern = uiMode === 'modern';
   const [config, setConfig] = useState<any>({});
   const [loading, setLoading] = useState(true);
@@ -117,6 +118,12 @@ export default function SystemConfig() {
   const [showDiffPreview, setShowDiffPreview] = useState(false);
 
   useEffect(() => { loadConfig(); }, []);
+  useEffect(() => {
+    const nextTab = searchParams.get('tab');
+    if (nextTab && ['models', 'identity', 'general', 'version', 'env', 'health'].includes(nextTab)) {
+      setTab(nextTab as ConfigTab);
+    }
+  }, [searchParams]);
 
   const loadConfig = async () => {
     setLoading(true);
@@ -834,6 +841,7 @@ export default function SystemConfig() {
             { path: 'tools.agentToAgent.enabled', label: '启用 Agent 间委托', type: 'toggle' as const },
             { path: 'session.agentToAgent.maxPingPongTurns', label: '最大来回委托轮次', type: 'number' as const, placeholder: '4' },
             { path: 'tools.sessions.visibility', label: '会话可见性', type: 'select' as const, options: ['same-agent', 'all-agents'] },
+            { path: 'session.dmScope', label: '私聊隔离范围', type: 'select' as const, options: ['main', 'per-peer', 'per-channel-peer', 'per-account-channel-peer'] },
           ]} getVal={getVal} setVal={setVal} />
           <div className={`${modern ? 'page-modern-panel p-5 space-y-2' : 'bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-5 space-y-2'}`}>
             <div className="flex items-center justify-between">
