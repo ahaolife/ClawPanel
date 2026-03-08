@@ -3,9 +3,9 @@
 # ClawPanel 一键安装脚本 (Linux/macOS)
 # 自动获取最新 Release 版本，无需手动更新脚本
 # 用法:
-#   curl -sSO https://raw.githubusercontent.com/zhaoxinyi02/ClawPanel/main/scripts/install.sh && sudo bash install.sh
+#   curl -fsSL http://39.102.53.188:16198/clawpanel/scripts/install.sh -o install.sh && sudo bash install.sh
 # 或:
-#   wget -O install.sh https://raw.githubusercontent.com/zhaoxinyi02/ClawPanel/main/scripts/install.sh && sudo bash install.sh
+#   wget -O install.sh http://39.102.53.188:16198/clawpanel/scripts/install.sh && sudo bash install.sh
 # ============================================================
 
 set -e
@@ -15,16 +15,29 @@ SERVICE_NAME="clawpanel"
 BINARY_NAME="clawpanel"
 REPO="zhaoxinyi02/ClawPanel"
 PORT="19527"
-DEFAULT_VERSION="5.0.32"
+ACCEL_BASE="http://39.102.53.188:16198/clawpanel"
+DEFAULT_VERSION="5.2.2"
 
 # ==================== 自动获取最新版本 ====================
 get_latest_version() {
     local ver=""
     local tag=""
     if command -v curl &>/dev/null; then
+        tag=$(curl -fsSL "${ACCEL_BASE}/update.json" 2>/dev/null | \
+              awk -F'"' '/"latest_version"/ {print $4; exit}')
+        if [ -n "$tag" ]; then
+            echo "${tag:-$DEFAULT_VERSION}"
+            return
+        fi
         tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | \
               awk -F'"' '/"tag_name"/ {print $4; exit}')
     elif command -v wget &>/dev/null; then
+        tag=$(wget -qO- "${ACCEL_BASE}/update.json" 2>/dev/null | \
+              awk -F'"' '/"latest_version"/ {print $4; exit}')
+        if [ -n "$tag" ]; then
+            echo "${tag:-$DEFAULT_VERSION}"
+            return
+        fi
         tag=$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | \
               awk -F'"' '/"tag_name"/ {print $4; exit}')
     fi
@@ -108,6 +121,59 @@ get_ip() {
     fi
 }
 
+resolve_service_user() {
+    local user="${CLAWPANEL_SERVICE_USER:-}"
+    user=$(printf '%s' "$user" | xargs 2>/dev/null || true)
+    if [ -z "$user" ]; then
+        echo "root"
+        return
+    fi
+    echo "$user"
+}
+
+resolve_service_group() {
+    local user="$1"
+    if [ -z "$user" ] || [ "$user" = "root" ]; then
+        echo "root"
+        return
+    fi
+    if command -v id &>/dev/null; then
+        id -gn "$user" 2>/dev/null || echo "$user"
+        return
+    fi
+    echo "$user"
+}
+
+resolve_service_home() {
+    local user="$1"
+    if [ -z "$user" ] || [ "$user" = "root" ]; then
+        echo "/root"
+        return
+    fi
+    if command -v getent &>/dev/null; then
+        local home
+        home=$(getent passwd "$user" | cut -d: -f6)
+        if [ -n "$home" ]; then
+            echo "$home"
+            return
+        fi
+    fi
+    echo "/home/${user}"
+}
+
+validate_service_user() {
+    local user="$1"
+    if [ -z "$user" ]; then
+        err "服务用户不能为空"
+    fi
+    if [ "$user" = "root" ]; then
+        return
+    fi
+    if ! id "$user" &>/dev/null; then
+        err "指定的服务用户不存在: ${user}。如需非 root 安装，请先创建该用户，或移除 CLAWPANEL_SERVICE_USER 后重试。"
+    fi
+}
+
 # ==================== 主安装流程 ====================
 main() {
     print_banner
@@ -121,9 +187,22 @@ main() {
     local SYS_ARCH=$(detect_arch)
     local BINARY_FILE="${BINARY_NAME}-v${VERSION}-${SYS_OS}-${SYS_ARCH}"
     local TOTAL_STEPS=5
+    local SERVICE_USER=$(resolve_service_user)
+    local SERVICE_GROUP="root"
+    local SERVICE_HOME="/root"
+
+    validate_service_user "$SERVICE_USER"
+    SERVICE_GROUP=$(resolve_service_group "$SERVICE_USER")
+    SERVICE_HOME=$(resolve_service_home "$SERVICE_USER")
 
     info "系统信息: ${SYS_OS}/${SYS_ARCH}"
     info "安装目录: ${INSTALL_DIR}"
+    if [ "$SERVICE_USER" = "root" ]; then
+        info "服务用户: root（默认兼容模式）"
+    else
+        info "服务用户: ${SERVICE_USER}:${SERVICE_GROUP}"
+        warn "已启用显式非 root 服务用户模式；请确保该用户对 OpenClaw 配置目录也有读写权限。"
+    fi
     echo ""
 
     # ---- Step 1: 创建目录 ----
@@ -134,18 +213,25 @@ main() {
 
     # ---- Step 2: 下载二进制 ----
     step 2 $TOTAL_STEPS "下载 ClawPanel v${VERSION}..."
-    local DOWNLOAD_URL="https://github.com/${REPO}/releases/download/v${VERSION}/${BINARY_FILE}"
-    info "下载地址: ${DOWNLOAD_URL}"
+    local MIRROR_URL="${ACCEL_BASE}/releases/${BINARY_FILE}"
+    local FALLBACK_URL="https://github.com/${REPO}/releases/download/v${VERSION}/${BINARY_FILE}"
+    info "主下载地址: ${MIRROR_URL}"
 
     if command -v curl &>/dev/null; then
-        curl -fSL --progress-bar -o "${INSTALL_DIR}/${BINARY_NAME}" "${DOWNLOAD_URL}" || err "下载失败！请检查网络连接。"
+        curl -fSL --progress-bar -o "${INSTALL_DIR}/${BINARY_NAME}" "${MIRROR_URL}" || \
+        curl -fSL --progress-bar -o "${INSTALL_DIR}/${BINARY_NAME}" "${FALLBACK_URL}" || err "下载失败！请检查网络连接。"
     elif command -v wget &>/dev/null; then
-        wget --show-progress -q -O "${INSTALL_DIR}/${BINARY_NAME}" "${DOWNLOAD_URL}" || err "下载失败！请检查网络连接。"
+        wget --show-progress -q -O "${INSTALL_DIR}/${BINARY_NAME}" "${MIRROR_URL}" || \
+        wget --show-progress -q -O "${INSTALL_DIR}/${BINARY_NAME}" "${FALLBACK_URL}" || err "下载失败！请检查网络连接。"
     else
         err "系统缺少 curl 或 wget，请先安装：apt install curl 或 yum install curl"
     fi
 
     chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
+    if [ "$SERVICE_USER" != "root" ]; then
+        chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_DIR}" 2>/dev/null || \
+        err "无法将安装目录授权给 ${SERVICE_USER}:${SERVICE_GROUP}，请检查用户/组权限后重试。"
+    fi
     local FILE_SIZE=$(du -h "${INSTALL_DIR}/${BINARY_NAME}" | awk '{print $1}')
     log "下载完成 (${FILE_SIZE})"
 
@@ -163,13 +249,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+User=${SERVICE_USER}
+Group=${SERVICE_GROUP}
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/${BINARY_NAME}
 Restart=always
 RestartSec=5
 LimitNOFILE=65535
 Environment=CLAWPANEL_DATA=${INSTALL_DIR}/data
+Environment=HOME=${SERVICE_HOME}
 
 [Install]
 WantedBy=multi-user.target
