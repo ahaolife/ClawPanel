@@ -546,7 +546,7 @@ export default function Channels() {
     api.getRequests().then(r => { if (r.ok) setRequests(r.requests || []); });
   };
 
-  useEffect(() => { reload(); loadSoftware(); loadNapcatStatus(); loadInstalledPlugins(); }, [loadFeishuDmDiagnosis]);
+  useEffect(() => { reload(); loadSoftware(); loadNapcatStatus(); loadInstalledPlugins(); }, []);
   // 自动选择第一个已启用的渠道（而非硬编码 QQ）
   useEffect(() => {
     if (selectedChannel) return; // 用户已手动选择
