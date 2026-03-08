@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -526,6 +527,54 @@ func boolStatus(installed bool) string {
 		return "installed"
 	}
 	return "not_installed"
+}
+
+func nodeMajorVersion(ver string) int {
+	v := strings.TrimSpace(strings.TrimPrefix(ver, "v"))
+	if v == "" {
+		return -1
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) == 0 {
+		return -1
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return -1
+	}
+	return major
+}
+
+func formatOpenClawManualPrerequisiteError(platform, nodeVer, gitVer string) error {
+	if platform != "windows" && platform != "darwin" {
+		return nil
+	}
+	label := platform
+	if platform == "darwin" {
+		label = "macOS"
+	}
+	missing := make([]string, 0, 2)
+	if nodeVer == "" {
+		missing = append(missing, "Node.js (>=20) https://nodejs.org")
+	} else if nodeMajorVersion(nodeVer) < 20 {
+		missing = append(missing, fmt.Sprintf("Node.js >=20（当前 %s） https://nodejs.org", nodeVer))
+	}
+	if gitVer == "" {
+		missing = append(missing, "Git https://git-scm.com/downloads")
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("检测到 %s 平台缺少前置依赖：%s。为避免一键安装中途报错，请先手动安装后再执行 OpenClaw 安装", label, strings.Join(missing, "；"))
+}
+
+func ensureOpenClawManualPrerequisites() error {
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		return nil
+	}
+	nodeVer := detectCmd("node", "--version")
+	gitVer := detectCmd("git", "--version")
+	return formatOpenClawManualPrerequisiteError(runtime.GOOS, nodeVer, gitVer)
 }
 
 func detectOpenClawVersion(cfg *config.Config) string {
@@ -1173,6 +1222,10 @@ echo "✅ $(python3 --version) 安装完成"
 `
 			}
 		case "openclaw":
+			if err := ensureOpenClawManualPrerequisites(); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": err.Error()})
+				return
+			}
 			taskName = "安装 OpenClaw"
 			if runtime.GOOS == "windows" {
 				script = `

@@ -2,6 +2,7 @@ import { Brain, Download, Loader2, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api';
+import { ensureOpenClawInstallPrerequisites, getOpenClawInstallPrerequisiteStatus } from '../lib/openclawPrereq';
 
 interface Props {
   configured: boolean;
@@ -13,6 +14,10 @@ export default function OpenClawRequired({ configured, children }: Props) {
   const dismissKey = `openclaw-required-dismissed:${pathname}`;
   const [installing, setInstalling] = useState(false);
   const [dismissed, setDismissed] = useState(() => sessionStorage.getItem(dismissKey) === '1');
+  const [installBlocked, setInstallBlocked] = useState(false);
+  const [installBlockedMessage, setInstallBlockedMessage] = useState('');
+  const [nodeUrl, setNodeUrl] = useState('https://nodejs.org');
+  const [gitUrl, setGitUrl] = useState('https://git-scm.com/downloads');
 
   useEffect(() => {
     if (configured) {
@@ -30,11 +35,35 @@ export default function OpenClawRequired({ configured, children }: Props) {
     setDismissed(sessionStorage.getItem(dismissKey) === '1');
   }, [dismissKey]);
 
+  useEffect(() => {
+    let active = true;
+    getOpenClawInstallPrerequisiteStatus().then(status => {
+      if (!active) return;
+      setInstallBlocked(status.requiresManualInstall);
+      setInstallBlockedMessage(status.message || '');
+      setNodeUrl(status.nodeUrl);
+      setGitUrl(status.gitUrl);
+    }).catch(() => {
+      if (!active) return;
+      setInstallBlocked(false);
+      setInstallBlockedMessage('');
+    });
+    return () => { active = false; };
+  }, []);
+
   if (configured) return <>{children}</>;
 
   const handleInstall = async () => {
     setInstalling(true);
-    try { await api.installSoftware('openclaw'); } catch {}
+    try {
+      const status = await ensureOpenClawInstallPrerequisites();
+      if (status.requiresManualInstall) {
+        setInstallBlocked(true);
+        setInstallBlockedMessage(status.message || '请先手动安装 Node.js 与 Git');
+        return;
+      }
+      await api.installSoftware('openclaw');
+    } catch {}
     finally { setInstalling(false); }
   };
 
@@ -57,16 +86,23 @@ export default function OpenClawRequired({ configured, children }: Props) {
             <p className="text-xs text-amber-700 dark:text-amber-300 mt-1">
               已暂时关闭阻断提示，便于前端调试；当前页面的实时数据和保存能力可能不完整。
             </p>
+            {installBlockedMessage && <p className="text-xs text-amber-700 dark:text-amber-300 mt-2">{installBlockedMessage}</p>}
           </div>
           <div className="flex flex-wrap gap-2">
             <button
               onClick={handleInstall}
-              disabled={installing}
+              disabled={installing || installBlocked}
               className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-xl bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 transition-all"
             >
               {installing ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
               {installing ? '安装中...' : '安装 OpenClaw'}
             </button>
+            {installBlocked && (
+              <>
+                <button onClick={() => window.open(nodeUrl, '_blank', 'noopener,noreferrer')} className="px-4 py-2 text-xs font-medium rounded-xl border border-blue-200 text-blue-700 hover:bg-blue-50 transition-colors">下载 Node.js</button>
+                <button onClick={() => window.open(gitUrl, '_blank', 'noopener,noreferrer')} className="px-4 py-2 text-xs font-medium rounded-xl border border-blue-200 text-blue-700 hover:bg-blue-50 transition-colors">下载 Git</button>
+              </>
+            )}
             <button
               onClick={reopen}
               className="px-4 py-2 text-xs font-medium rounded-xl border border-amber-300/80 dark:border-amber-800 text-amber-700 dark:text-amber-300 hover:bg-amber-100/70 dark:hover:bg-amber-900/30 transition-colors"
@@ -104,13 +140,20 @@ export default function OpenClawRequired({ configured, children }: Props) {
             <p className="text-sm text-gray-500 mt-1">
               此功能依赖 OpenClaw AI 引擎。你可以先安装 / 配置，也可以先关闭提示继续调试页面结构。
             </p>
+            {installBlockedMessage && <p className="text-xs text-amber-600 dark:text-amber-300 mt-3 leading-5">{installBlockedMessage}</p>}
           </div>
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
-            <button onClick={handleInstall} disabled={installing}
+            <button onClick={handleInstall} disabled={installing || installBlocked}
               className="page-modern-accent inline-flex items-center justify-center gap-2 px-6 py-3 text-sm disabled:opacity-50">
               {installing ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
               {installing ? '安装中...' : '一键安装 OpenClaw'}
             </button>
+            {installBlocked && (
+              <>
+                <button onClick={() => window.open(nodeUrl, '_blank', 'noopener,noreferrer')} className="inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-medium rounded-xl border border-blue-200 text-blue-700 hover:bg-blue-50 transition-colors">下载 Node.js</button>
+                <button onClick={() => window.open(gitUrl, '_blank', 'noopener,noreferrer')} className="inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-medium rounded-xl border border-blue-200 text-blue-700 hover:bg-blue-50 transition-colors">下载 Git</button>
+              </>
+            )}
             <button
               onClick={dismiss}
               className="inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-medium rounded-xl border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
