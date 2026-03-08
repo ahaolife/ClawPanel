@@ -1,4 +1,4 @@
-VERSION := 5.2.4
+VERSION := 5.2.5
 BINARY := clawpanel
 MODULE := github.com/zhaoxinyi02/ClawPanel
 LDFLAGS := -s -w -X main.Version=$(VERSION)

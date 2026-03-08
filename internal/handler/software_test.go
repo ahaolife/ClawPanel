@@ -59,3 +59,64 @@ func TestBuildNapCatInstallScriptUsesConfiguredQQToken(t *testing.T) {
 		t.Fatalf("script should inject the JSON-encoded token into onebot11.json")
 	}
 }
+
+func TestDetectPythonVersionFallsBackToWindowsStyleCommands(t *testing.T) {
+	t.Parallel()
+
+	called := make([]string, 0, 3)
+	got := detectPythonVersionWith(func(name string, args ...string) string {
+		called = append(called, name)
+		switch name {
+		case "python3":
+			return ""
+		case "python":
+			return "Python 3.12.8"
+		default:
+			return ""
+		}
+	})
+
+	if got != "Python 3.12.8" {
+		t.Fatalf("expected python fallback version, got %q", got)
+	}
+	if len(called) < 2 || called[0] != "python3" || called[1] != "python" {
+		t.Fatalf("unexpected command order: %#v", called)
+	}
+}
+
+func TestDetectPythonVersionFallsBackToPyLauncher(t *testing.T) {
+	t.Parallel()
+
+	got := detectPythonVersionWith(func(name string, args ...string) string {
+		if name == "py" {
+			return "Python 3.11.9"
+		}
+		return ""
+	})
+
+	if got != "Python 3.11.9" {
+		t.Fatalf("expected py launcher version, got %q", got)
+	}
+}
+
+func TestFormatOpenClawManualPrerequisiteErrorRequiresUsableNpm(t *testing.T) {
+	t.Parallel()
+
+	err := formatOpenClawManualPrerequisiteError("windows", "v22.14.0", "", "git version 2.49.0")
+	if err == nil {
+		t.Fatal("expected npm usability error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "npm") || !strings.Contains(msg, "nodejs.org") {
+		t.Fatalf("expected npm hint in error, got %q", msg)
+	}
+}
+
+func TestFormatOpenClawManualPrerequisiteErrorClearsWhenDesktopPrereqsUsable(t *testing.T) {
+	t.Parallel()
+
+	err := formatOpenClawManualPrerequisiteError("windows", "v22.14.0", "10.9.2", "git version 2.49.0")
+	if err != nil {
+		t.Fatalf("expected no error when node/npm/git are usable, got %v", err)
+	}
+}

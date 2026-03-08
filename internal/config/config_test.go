@@ -256,6 +256,35 @@ func TestWriteOpenClawJSONPrefersListDefaultOverLegacyKey(t *testing.T) {
 	}
 }
 
+func TestComputeRuntimeExtraBinPathsForWindowsIncludesCommonRuntimeDirs(t *testing.T) {
+	t.Parallel()
+
+	home := `C:\Users\Alice`
+	paths := computeRuntimeExtraBinPathsForOS("windows", home)
+
+	wants := []string{
+		filepath.Join(home, "AppData", "Roaming", "npm"),
+		filepath.Join(home, "AppData", "Local", "Microsoft", "WindowsApps"),
+		filepath.Join(home, "scoop", "shims"),
+		`C:\Program Files\nodejs`,
+		`C:\Program Files\Git\cmd`,
+		`C:\Program Files\Git\bin`,
+		`C:\Program Files\Git\mingw64\bin`,
+		`C:\ProgramData\chocolatey\bin`,
+		`C:\ClawPanel\npm-global`,
+	}
+
+	set := map[string]bool{}
+	for _, item := range paths {
+		set[item] = true
+	}
+	for _, want := range wants {
+		if !set[want] {
+			t.Fatalf("expected windows runtime path list to include %q, got %#v", want, paths)
+		}
+	}
+}
+
 func TestWriteOpenClawJSONMaterializesDiskOnlyLegacyDefault(t *testing.T) {
 	t.Parallel()
 

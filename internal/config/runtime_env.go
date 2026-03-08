@@ -145,12 +145,36 @@ func runtimeExtraBinPaths(home string) []string {
 }
 
 func computeRuntimeExtraBinPaths(home string) []string {
-	if runtime.GOOS == "windows" {
-		return dedupeNonEmpty([]string{
+	return computeRuntimeExtraBinPathsForOS(runtime.GOOS, home)
+
+}
+
+func computeRuntimeExtraBinPathsForOS(goos, home string) []string {
+	if goos == "windows" {
+		paths := []string{
 			filepath.Join(home, "AppData", "Roaming", "npm"),
+			filepath.Join(home, "AppData", "Roaming", "nvm"),
+			filepath.Join(home, "AppData", "Local", "Microsoft", "WindowsApps"),
+			filepath.Join(home, "AppData", "Local", "Programs", "Python"),
+			filepath.Join(home, "AppData", "Local", "pyenv", "pyenv-win", "bin"),
+			filepath.Join(home, "AppData", "Local", "pyenv", "pyenv-win", "shims"),
+			filepath.Join(home, "scoop", "shims"),
 			filepath.Join(home, ".local", "bin"),
 			`C:\Program Files\nodejs`,
-		})
+			`C:\Program Files\Git\cmd`,
+			`C:\Program Files\Git\bin`,
+			`C:\Program Files\Git\mingw64\bin`,
+			`C:\Program Files (x86)\Git\cmd`,
+			`C:\Program Files (x86)\Git\bin`,
+			`C:\Program Files (x86)\Git\mingw64\bin`,
+			`C:\ProgramData\chocolatey\bin`,
+			`C:\ClawPanel\npm-global`,
+			`C:\ClawPanel\npm-global\node_modules\.bin`,
+		}
+		paths = append(paths, globVersionedDirs(filepath.Join(home, "AppData", "Local", "Programs", "Python", "Python*"))...)
+		paths = append(paths, globVersionedDirs(filepath.Join(home, "AppData", "Local", "Programs", "Python", "Python*", "Scripts"))...)
+		paths = append(paths, globVersionedDirs(filepath.Join(home, "AppData", "Roaming", "nvm", "v*"))...)
+		return dedupeNonEmpty(paths)
 	}
 
 	paths := []string{

@@ -257,6 +257,21 @@ func detectCmd(name string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+func detectPythonVersion() string {
+	return detectPythonVersionWith(func(name string, args ...string) string {
+		return detectCmd(name, args...)
+	})
+}
+
+func detectPythonVersionWith(run func(string, ...string) string) string {
+	for _, candidate := range [][]string{{"python3", "--version"}, {"python", "--version"}, {"py", "--version"}} {
+		if out := run(candidate[0], candidate[1:]...); out != "" {
+			return out
+		}
+	}
+	return ""
+}
+
 func isDockerContainerRunning(name string) bool {
 	out := detectCmd("docker", "inspect", "--format", "{{.State.Running}}", name)
 	return out == "true"
@@ -308,7 +323,7 @@ func GetSoftwareList(cfg *config.Config) gin.HandlerFunc {
 		})
 
 		// Python
-		pythonVer := detectCmd("python3", "--version")
+		pythonVer := detectPythonVersion()
 		list = append(list, SoftwareInfo{
 			ID: "python", Name: "Python 3", Description: "Python 运行时",
 			Version: pythonVer, Installed: pythonVer != "", Installable: true,
@@ -545,7 +560,7 @@ func nodeMajorVersion(ver string) int {
 	return major
 }
 
-func formatOpenClawManualPrerequisiteError(platform, nodeVer, gitVer string) error {
+func formatOpenClawManualPrerequisiteError(platform, nodeVer, npmVer, gitVer string) error {
 	if platform != "windows" && platform != "darwin" {
 		return nil
 	}
@@ -553,11 +568,14 @@ func formatOpenClawManualPrerequisiteError(platform, nodeVer, gitVer string) err
 	if platform == "darwin" {
 		label = "macOS"
 	}
-	missing := make([]string, 0, 2)
+	missing := make([]string, 0, 3)
 	if nodeVer == "" {
 		missing = append(missing, "Node.js (>=20) https://nodejs.org")
 	} else if nodeMajorVersion(nodeVer) < 20 {
 		missing = append(missing, fmt.Sprintf("Node.js >=20（当前 %s） https://nodejs.org", nodeVer))
+	}
+	if npmVer == "" {
+		missing = append(missing, "npm（需随 Node.js 一起可用） https://nodejs.org")
 	}
 	if gitVer == "" {
 		missing = append(missing, "Git https://git-scm.com/downloads")
@@ -573,8 +591,9 @@ func ensureOpenClawManualPrerequisites() error {
 		return nil
 	}
 	nodeVer := detectCmd("node", "--version")
+	npmVer := detectCmd("npm", "--version")
 	gitVer := detectCmd("git", "--version")
-	return formatOpenClawManualPrerequisiteError(runtime.GOOS, nodeVer, gitVer)
+	return formatOpenClawManualPrerequisiteError(runtime.GOOS, nodeVer, npmVer, gitVer)
 }
 
 func detectOpenClawVersion(cfg *config.Config) string {
