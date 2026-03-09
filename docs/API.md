@@ -238,6 +238,34 @@ Authorization: Bearer <token>
 ### DELETE `/api/openclaw/agents/:id?preserveSessions=true`
 删除 Agent，可选保留该 Agent 的 sessions 文件。
 
+### GET `/api/openclaw/agents/:id/core-files`
+读取指定 Agent 工作区内的核心文件快照。
+
+**返回要点：**
+- 仅暴露固定文件集：`AGENTS.md` / `SOUL.md` / `TOOLS.md` / `IDENTITY.md` / `USER.md` / `HEARTBEAT.md` / `BOOT.md` / `BOOTSTRAP.md` / `MEMORY.md`
+- `workspace` 为当前 Agent 的受管工作区路径
+- 若 workspace 不存在、位于受管根目录外，或祖先链/目标文件包含 symlink，会返回错误而不是继续访问
+
+### PUT `/api/openclaw/agents/:id/core-files`
+保存指定 Agent 的单个核心文件。
+
+**请求体：**
+```json
+{
+  "name": "AGENTS.md",
+  "content": "# Agent Notes"
+}
+```
+
+> 仅允许写入固定核心文件集，内容大小存在上限；workspace 越界、symlink 或不受管路径会被拒绝。
+
+### GET `/api/openclaw/agents/:id/identity/avatar`
+读取 Agent 的本地头像文件。
+
+> 该接口仅在 `identity.avatar` 指向 **agent workspace 内的本地相对路径文件** 时可用。
+>
+> 若 `identity.avatar` 是 `http(s)` URL、`data:` URI、越界路径、symlink、目录、过大文件或不支持格式，会返回错误。
+
 ### GET `/api/openclaw/bindings`
 获取 bindings 路由规则（按顺序返回）。
 
@@ -249,22 +277,27 @@ Authorization: Bearer <token>
 {
   "bindings": [
     {
-      "name": "work-group",
-      "enabled": true,
+      "comment": "work-group",
       "agentId": "work",
-      "match": { "channel": "qq", "peer": "group:123" }
+      "match": {
+        "channel": "qq",
+        "peer": { "kind": "group", "id": "123" }
+      }
     }
   ]
 }
 ```
 
-> 兼容性：后端同时兼容旧字段 `agent`，写入时会标准化为 `agentId`。
+> 当前写入模型采用官方兼容 schema：
 >
 > v5.1.0+：`match` 开启严格校验：
 > - `match.channel` 必填
 > - 允许字段：`channel/sender/peer/parentPeer/guildId/teamId/accountId/roles`
 > - `roles` 必须与 `guildId` 同时使用
-> - `peer/parentPeer` 支持字符串（如 `group:*`）和对象（如 `{ "kind": "group", "id": "123" }`）
+> - `peer` / `parentPeer` 支持 `kind:id` 字符串或 `{ "kind": "...", "id": "..." }` 对象
+> - 旧写法（例如 `peer: "group:*"`、`sender`、`parentPeer`）保存时会继续保留，避免升级后把历史 bindings 改坏
+> - top-level 公开字段为 `type`（`route`/`acp`）、`comment`、`agentId`、`acp`
+> - 旧字段 `agent` 仍会在保存时被标准化为 `agentId`
 
 ### POST `/api/openclaw/route/preview`
 路由预览。根据 `meta` 返回命中 Agent、命中规则和 trace。
@@ -274,7 +307,9 @@ Authorization: Bearer <token>
 {
   "meta": {
     "channel": "qq",
+    "sender": "alice",
     "peer": "group:123",
+    "parentPeer": "",
     "guildId": "",
     "teamId": "",
     "accountId": "10001"
@@ -282,10 +317,16 @@ Authorization: Bearer <token>
 }
 ```
 
-> v5.1.0+：预览命中遵循“更具体规则优先”而非仅配置顺序。优先级：
+> v5.1.0+：预览命中遵循“更具体规则优先”而非仅配置顺序。当前优先级：
 > `sender > peer > parentPeer > guildId+roles > guildId > teamId > accountId > accountId:* > channel > default`。
 >
 > v5.1.0+：当 `meta.channel` 已知且 `meta.accountId` 省略时，预览会按该渠道的默认账号语义处理；对于飞书这类多账号渠道，这与真实路由行为保持一致。
+>
+> v5.1.0+：
+> - `matchedBy` 可能返回：`binding.sender` / `binding.peer` / `binding.peer.parent` / `binding.guild+roles` / `binding.guild` / `binding.team` / `binding.account` / `binding.account.wildcard` / `binding.channel` / `default`
+> - `matchedIndex` 为命中 binding 在原始数组中的索引；若走默认兜底则为 `-1`
+> - `meta.peer` / `meta.parentPeer` 在预览输入中可写成字符串或对象
+> - 当前面板为了兼容历史配置，会继续识别 bindings 中的 `sender` / `parentPeer` 以及字符串 `peer`
 
 ### GET `/api/openclaw/models`
 获取模型配置。
@@ -445,6 +486,19 @@ Authorization: Bearer <token>
 - `skills`：按 OpenClaw 官方优先级聚合后的技能列表，包含 `skillKey`、`source`、`requires`、`metadata`
 - `plugins`：已发现的插件列表
 
+### PUT `/api/system/skills/:id/toggle`
+切换技能开关。
+
+**请求体：**
+```json
+{
+  "enabled": true,
+  "aliases": ["legacy-skill-dir-name"]
+}
+```
+
+> 当前实现会写入 `skills.entries.<id>.enabled`；`aliases` 用于同步清理 legacy `skills.blocklist` 中的旧别名。
+
 ### GET `/api/system/clawhub/search`
 通过 ClawHub 官方公开 API 搜索或浏览公开技能。
 
@@ -475,6 +529,8 @@ Authorization: Bearer <token>
 ### GET `/api/system/cron`
 获取定时任务列表。
 
+> 优先读取 `openclaw.json.cron.jobs`；若为空，再回退读取 `OPENCLAW_DIR/cron/jobs.json`。
+
 ### PUT `/api/system/cron`
 更新定时任务。
 
@@ -483,9 +539,16 @@ Authorization: Bearer <token>
 { "jobs": [...] }
 ```
 
-> v5.1.0+：保存前会校验每个任务的 `sessionTarget` 必须存在于 Agent 列表。
+> v5.1.0+：保存前会校验每个任务：
 >
-> v5.1.0+：当 `sessionTarget` 为空时，后端会自动回填为“当前有效默认 Agent”（优先 `agents.list[].default=true`，若未显式配置则回退到已存在 Agent，最终兜底 `main`）。
+> - `agentId` 为独立字段；若填写，必须是当前存在的 Agent
+> - `sessionTarget` 只允许 `main` 或 `isolated`
+> - 若旧数据把 `sessionTarget` 写成某个已知 `agentId`，保存时会迁移为：
+>   - `agentId = <旧值>`
+>   - `sessionTarget = "main"`
+> - 若 `sessionTarget` 为空，也会标准化为 `"main"`
+> - 保存时会同时同步 `openclaw.json.cron.jobs` 与 `OPENCLAW_DIR/cron/jobs.json`
+> - `cron/jobs.json` 采用临时文件 + rename 的原子写入，避免半写入状态
 
 ## 会话管理
 

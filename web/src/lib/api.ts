@@ -132,6 +132,7 @@ const _api = {
   workspaceClean: () => post('/workspace/clean'),
   workspaceDownloadUrl: (filePath: string) => BASE + '/workspace/download?path=' + encodeURIComponent(filePath) + '&token=' + (localStorage.getItem('admin-token') || ''),
   workspacePreviewUrl: (filePath: string) => BASE + '/workspace/preview?path=' + encodeURIComponent(filePath) + '&token=' + (localStorage.getItem('admin-token') || ''),
+  agentIdentityAvatarUrl: (agentId: string) => BASE + `/openclaw/agents/${encodeURIComponent(agentId)}/identity/avatar?token=` + (localStorage.getItem('admin-token') || ''),
   workspacePreview: (filePath: string) => get('/workspace/preview?path=' + encodeURIComponent(filePath)),
   workspaceNotes: () => get('/workspace/notes'),
   workspaceSetNote: (filePath: string, note: string) => put('/workspace/notes', { path: filePath, note }),

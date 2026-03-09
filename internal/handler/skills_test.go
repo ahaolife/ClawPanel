@@ -1280,3 +1280,424 @@ func resolvedTempDir(t *testing.T) string {
 	}
 	return dir
 }
+
+// ---------------------------------------------------------------------------
+// Gap-fix tests added for multi-dev alignment
+// ---------------------------------------------------------------------------
+
+// TestScanSkillRootSymlinkEscapeGuard verifies that a symlink inside a skill
+// root that points to a directory outside the root is NOT followed by the
+// recursive scanner.
+func TestScanSkillRootSymlinkEscapeGuard(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	t.Parallel()
+
+	root := resolvedTempDir(t)
+	skillsRoot := filepath.Join(root, "skills")
+	outside := filepath.Join(root, "secret")
+
+	// Create a legitimate skill inside the root.
+	writeSkillFixture(t, filepath.Join(skillsRoot, "real-skill"), "Real Skill", "inside root", "")
+
+	// Create a directory outside the root that has a skill.
+	writeSkillFixture(t, filepath.Join(outside, "escape-skill"), "Escape Skill", "should not appear", "")
+
+	// Create a symlink inside the root that points to the outside directory.
+	symTarget := filepath.Join(outside, "escape-skill")
+	symLink := filepath.Join(skillsRoot, "escape-via-symlink")
+	if err := os.Symlink(symTarget, symLink); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	skills := make([]skillInfo, 0)
+	positions := map[string]int{}
+	scanSkillRoot(skillsRoot, "test", &skills, positions, nil, nil)
+
+	for _, s := range skills {
+		if s.ID == "escape-skill" || strings.Contains(s.Path, "secret") {
+			t.Fatalf("symlink escape: scanner returned skill outside root: %+v", s)
+		}
+	}
+	// The real skill should still be found.
+	found := false
+	for _, s := range skills {
+		if s.ID == "real-skill" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected real-skill to be found, got %v", skills)
+	}
+}
+
+// TestResolveSkillDiscoveryRootsAllowBundledFalse verifies that when
+// skills.allowBundled is explicitly false, the bundled ("app-skill") root is
+// omitted from the discovery list.
+func TestResolveSkillDiscoveryRootsAllowBundledFalse(t *testing.T) {
+	t.Parallel()
+
+	root := resolvedTempDir(t)
+	openClawDir := filepath.Join(root, "openclaw")
+	appDir := filepath.Join(root, "app")
+	cfg := &config.Config{OpenClawDir: openClawDir, OpenClawApp: appDir}
+	writeJSON(t, filepath.Join(openClawDir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "main",
+			"list": []interface{}{
+				map[string]interface{}{"id": "main"},
+			},
+		},
+		"skills": map[string]interface{}{
+			"allowBundled": false,
+		},
+	})
+	ocConfig, _ := cfg.ReadOpenClawJSON()
+
+	roots := resolveSkillDiscoveryRoots(cfg, ocConfig, nil, "main")
+	for _, r := range roots {
+		if r.Source == "app-skill" {
+			t.Fatalf("expected bundled root to be excluded when allowBundled=false, but got %+v", r)
+		}
+	}
+}
+
+// TestResolveSkillDiscoveryRootsAllowBundledDefault verifies that when
+// skills.allowBundled is absent (default), the bundled root IS included.
+func TestResolveSkillDiscoveryRootsAllowBundledDefault(t *testing.T) {
+	t.Parallel()
+
+	root := resolvedTempDir(t)
+	openClawDir := filepath.Join(root, "openclaw")
+	appDir := filepath.Join(root, "app")
+	cfg := &config.Config{OpenClawDir: openClawDir, OpenClawApp: appDir}
+	writeJSON(t, filepath.Join(openClawDir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "main",
+			"list":    []interface{}{map[string]interface{}{"id": "main"}},
+		},
+	})
+	ocConfig, _ := cfg.ReadOpenClawJSON()
+
+	roots := resolveSkillDiscoveryRoots(cfg, ocConfig, nil, "main")
+	hasBundled := false
+	for _, r := range roots {
+		if r.Source == "app-skill" {
+			hasBundled = true
+			break
+		}
+	}
+	if !hasBundled {
+		t.Fatalf("expected bundled root when allowBundled not set, roots=%v", roots)
+	}
+}
+
+func TestDiscoverSkillsRespectsAllowBundledAllowlist(t *testing.T) {
+	t.Parallel()
+
+	root := resolvedTempDir(t)
+	openClawDir := filepath.Join(root, "openclaw")
+	appDir := filepath.Join(root, "app")
+	workspace := filepath.Join(root, "workspace")
+	cfg := &config.Config{OpenClawDir: openClawDir, OpenClawApp: appDir, OpenClawWork: workspace}
+	writeJSON(t, filepath.Join(openClawDir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "main",
+			"list":    []interface{}{map[string]interface{}{"id": "main", "workspace": workspace}},
+		},
+		"skills": map[string]interface{}{
+			"allowBundled": []interface{}{"allowed-bundled"},
+		},
+	})
+
+	writeSkillFixture(t, filepath.Join(appDir, "skills", "allowed-bundled"), "Allowed Bundled", "bundled and allowed", "")
+	writeSkillFixture(t, filepath.Join(appDir, "skills", "hidden-bundled"), "Hidden Bundled", "bundled and filtered", "")
+	writeSkillFixture(t, filepath.Join(openClawDir, "skills", "managed-skill"), "Managed Skill", "managed copy", "")
+
+	ocConfig, _ := cfg.ReadOpenClawJSON()
+	skills := discoverSkills(
+		resolveSkillDiscoveryRoots(cfg, ocConfig, nil, "main"),
+		asMapAny(asMapAny(ocConfig["skills"])["entries"]),
+		nil,
+		resolveBundledSkillAllowlist(ocConfig),
+	)
+
+	if findSkillByID(skills, "allowed-bundled") == nil {
+		t.Fatalf("expected allowlisted bundled skill to stay visible")
+	}
+	if findSkillByID(skills, "hidden-bundled") != nil {
+		t.Fatalf("expected bundled skill outside allowBundled allowlist to be filtered out")
+	}
+	if findSkillByID(skills, "managed-skill") == nil {
+		t.Fatalf("expected non-bundled skills to remain visible")
+	}
+}
+
+// TestValidateCronJobsSessionTargetsAcceptsOfficialValues verifies that
+// "main" and "isolated" are accepted without modification.
+func TestValidateCronJobsSessionTargetsAcceptsOfficialValues(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	writeJSON(t, filepath.Join(dir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "main",
+			"list":    []interface{}{map[string]interface{}{"id": "main"}},
+		},
+	})
+
+	jobs := []map[string]interface{}{
+		{"id": "j1", "sessionTarget": "main"},
+		{"id": "j2", "sessionTarget": "isolated"},
+		{"id": "j3"}, // no sessionTarget → should be OK (empty allowed)
+	}
+	if err := validateCronJobsSessionTargets(cfg, jobs); err != nil {
+		t.Fatalf("unexpected error for official values: %v", err)
+	}
+	// Values should be unchanged.
+	if jobs[0]["sessionTarget"] != "main" {
+		t.Fatalf("expected main unchanged, got %v", jobs[0]["sessionTarget"])
+	}
+	if jobs[1]["sessionTarget"] != "isolated" {
+		t.Fatalf("expected isolated unchanged, got %v", jobs[1]["sessionTarget"])
+	}
+}
+
+// TestValidateCronJobsSessionTargetsNormalizesLegacyAgentID verifies that a
+// known agent ID in sessionTarget is silently normalized to "main" for backward
+// compatibility instead of returning an error.
+func TestValidateCronJobsSessionTargetsNormalizesLegacyAgentID(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	writeJSON(t, filepath.Join(dir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "ops",
+			"list": []interface{}{
+				map[string]interface{}{"id": "main"},
+				map[string]interface{}{"id": "ops"},
+			},
+		},
+	})
+
+	jobs := []map[string]interface{}{
+		{"id": "j1", "sessionTarget": "ops"}, // legacy: agent ID used here
+	}
+	if err := validateCronJobsSessionTargets(cfg, jobs); err != nil {
+		t.Fatalf("unexpected error for legacy agent ID: %v", err)
+	}
+	// Should be normalised to "main".
+	if jobs[0]["sessionTarget"] != "main" {
+		t.Fatalf("expected legacy agent ID normalised to \"main\", got %v", jobs[0]["sessionTarget"])
+	}
+	if jobs[0]["agentId"] != "ops" {
+		t.Fatalf("expected legacy agent ID migrated into agentId, got %v", jobs[0]["agentId"])
+	}
+}
+
+// TestValidateCronJobsSessionTargetsRejectsUnknownValue verifies that an
+// unrecognised non-agent value in sessionTarget is rejected.
+func TestValidateCronJobsSessionTargetsRejectsUnknownValue(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	writeJSON(t, filepath.Join(dir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "main",
+			"list":    []interface{}{map[string]interface{}{"id": "main"}},
+		},
+	})
+
+	jobs := []map[string]interface{}{
+		{"id": "j1", "sessionTarget": "foobar-unknown"},
+	}
+	if err := validateCronJobsSessionTargets(cfg, jobs); err == nil {
+		t.Fatalf("expected error for unknown sessionTarget, got nil")
+	}
+}
+
+// TestSaveCronJobsNormalizesEmptySessionTargetToMain verifies that when a job
+// has no sessionTarget, SaveCronJobs sets it to "main" (official default) rather
+// than an agent ID.
+func TestSaveCronJobsNormalizesEmptySessionTargetToMain(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	writeJSON(t, filepath.Join(dir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "ops",
+			"list": []interface{}{
+				map[string]interface{}{"id": "main"},
+				map[string]interface{}{"id": "ops"},
+			},
+		},
+	})
+
+	r := gin.New()
+	r.PUT("/system/cron", SaveCronJobs(cfg))
+	body := bytes.NewReader([]byte(`{"jobs":[{"id":"j1","name":"test"}]}`))
+	req := httptest.NewRequest(http.MethodPut, "/system/cron", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	saved, _ := cfg.ReadOpenClawJSON()
+	cronCfg, _ := saved["cron"].(map[string]interface{})
+	jobs, _ := cronCfg["jobs"].([]interface{})
+	if len(jobs) == 0 {
+		t.Fatalf("expected jobs saved, got none")
+	}
+	job0, _ := jobs[0].(map[string]interface{})
+	if target, _ := job0["sessionTarget"].(string); target != "main" {
+		t.Fatalf("expected sessionTarget=\"main\", got %q", target)
+	}
+}
+
+func TestValidateCronJobsSessionTargetsRejectsUnknownAgentID(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	writeJSON(t, filepath.Join(dir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "main",
+			"list":    []interface{}{map[string]interface{}{"id": "main"}},
+		},
+	})
+
+	jobs := []map[string]interface{}{
+		{"id": "j1", "agentId": "ghost", "sessionTarget": "isolated"},
+	}
+	if err := validateCronJobsSessionTargets(cfg, jobs); err == nil {
+		t.Fatalf("expected error for unknown agentId, got nil")
+	}
+}
+
+// TestWriteCronJobsFileIsAtomic verifies that writeCronJobsFile does not leave
+// a .tmp file behind after a successful write.
+func TestWriteCronJobsFileIsAtomic(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	jobs := []interface{}{
+		map[string]interface{}{"id": "j1", "name": "nightly"},
+	}
+	if err := writeCronJobsFile(cfg, jobs); err != nil {
+		t.Fatalf("writeCronJobsFile: %v", err)
+	}
+	dest := filepath.Join(dir, "cron", "jobs.json")
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("expected jobs.json to exist: %v", err)
+	}
+	tmp := dest + ".tmp"
+	if _, err := os.Stat(tmp); err == nil {
+		t.Fatalf("expected .tmp file to be cleaned up, but it still exists")
+	}
+}
+
+func TestWriteCronJobsFileReplacesExistingDestination(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	first := []interface{}{
+		map[string]interface{}{"id": "j1", "name": "nightly"},
+	}
+	second := []interface{}{
+		map[string]interface{}{"id": "j2", "name": "weekly"},
+	}
+
+	if err := writeCronJobsFile(cfg, first); err != nil {
+		t.Fatalf("first writeCronJobsFile: %v", err)
+	}
+	if err := writeCronJobsFile(cfg, second); err != nil {
+		t.Fatalf("second writeCronJobsFile: %v", err)
+	}
+
+	dest := filepath.Join(dir, "cron", "jobs.json")
+	raw, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read jobs.json: %v", err)
+	}
+
+	var payload struct {
+		Jobs []map[string]interface{} `json:"jobs"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("decode jobs.json: %v", err)
+	}
+	if len(payload.Jobs) != 1 {
+		t.Fatalf("expected 1 job after replace, got %d", len(payload.Jobs))
+	}
+	if got := strings.TrimSpace(toString(payload.Jobs[0]["id"])); got != "j2" {
+		t.Fatalf("expected overwritten job id j2, got %q", got)
+	}
+	if _, err := os.Stat(dest + ".bak"); err == nil {
+		t.Fatalf("expected .bak file to be cleaned up after successful replace")
+	}
+}
+
+func TestSaveCronJobsRollsBackOpenClawJSONWhenMirrorWriteFails(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	original := map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "main",
+			"list": []interface{}{
+				map[string]interface{}{"id": "main"},
+			},
+		},
+		"cron": map[string]interface{}{
+			"jobs": []interface{}{
+				map[string]interface{}{"id": "old-job", "sessionTarget": "main"},
+			},
+		},
+	}
+	writeJSON(t, filepath.Join(dir, "openclaw.json"), original)
+	if err := os.WriteFile(filepath.Join(dir, "cron"), []byte("not-a-dir"), 0644); err != nil {
+		t.Fatalf("create blocking cron file: %v", err)
+	}
+
+	r := gin.New()
+	r.PUT("/cron/jobs", SaveCronJobs(cfg))
+	req := httptest.NewRequest(http.MethodPut, "/cron/jobs", bytes.NewReader([]byte(`{"jobs":[{"id":"new-job","sessionTarget":"main"}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 when cron mirror write fails, got %d: %s", w.Code, w.Body.String())
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "openclaw.json"))
+	if err != nil {
+		t.Fatalf("read openclaw.json: %v", err)
+	}
+	var restored map[string]interface{}
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatalf("decode restored openclaw.json: %v", err)
+	}
+	cron, _ := restored["cron"].(map[string]interface{})
+	jobs, _ := cron["jobs"].([]interface{})
+	if len(jobs) != 1 {
+		t.Fatalf("expected original jobs to be restored, got %d", len(jobs))
+	}
+	job, _ := jobs[0].(map[string]interface{})
+	if got := strings.TrimSpace(toString(job["id"])); got != "old-job" {
+		t.Fatalf("expected rollback to restore old-job, got %q", got)
+	}
+}

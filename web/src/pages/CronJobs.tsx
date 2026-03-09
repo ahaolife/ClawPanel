@@ -4,6 +4,7 @@ import { api } from '../lib/api';
 import {
   Clock, Plus, Play, Pause, Trash2, Edit3, RefreshCw,
   CheckCircle2, XCircle, AlertCircle, ChevronDown, ChevronRight,
+  Timer, CalendarClock,
 } from 'lucide-react';
 import { useI18n } from '../i18n';
 import MobileActionTray from '../components/MobileActionTray';
@@ -13,13 +14,32 @@ interface CronJob {
   name: string;
   description?: string;
   enabled: boolean;
+  /** agentId: which agent handles this job (new field; old jobs omit it and used sessionTarget instead) */
+  agentId?: string;
   schedule: { kind: string; expr?: string; everyMs?: number; atMs?: number; tz?: string };
+  /** sessionTarget: 'main' | 'isolated' — which session scope to use (new semantic); legacy jobs store the agentId here */
   sessionTarget: string;
   wakeMode: string;
   payload: { kind: string; text?: string; message?: string; deliver?: boolean; channel?: string; to?: string };
   state: { nextRunAtMs?: number; lastRunAtMs?: number; lastStatus?: string; lastError?: string; lastDurationMs?: number };
   createdAtMs: number;
 }
+
+/** Resolve the effective agentId from a job (handles legacy format where sessionTarget was the agentId) */
+function resolveAgentId(job: CronJob, fallback: string): string {
+  if (job.agentId != null) return job.agentId;
+  // Legacy: if sessionTarget is not a recognised session-mode keyword, it was the agentId
+  if (job.sessionTarget !== 'main' && job.sessionTarget !== 'isolated') return job.sessionTarget;
+  return fallback;
+}
+
+/** Resolve the effective session mode from a job */
+function resolveSessionMode(job: CronJob): string {
+  if (job.agentId != null) return job.sessionTarget; // new format
+  return 'main'; // legacy format: assume main session
+}
+
+type ScheduleKind = 'cron' | 'every' | 'at';
 
 export default function CronJobs() {
   const { t, locale } = useI18n();
@@ -33,12 +53,20 @@ export default function CronJobs() {
   const [agentOptions, setAgentOptions] = useState<string[]>([]);
   const [defaultAgent, setDefaultAgent] = useState('main');
 
-  // New job form
+  // New job form — core
   const [newName, setNewName] = useState('');
-  const [newCron, setNewCron] = useState('0 9 * * *');
   const [newMessage, setNewMessage] = useState('');
   const [newDeliver, setNewDeliver] = useState(true);
-  const [newSessionTarget, setNewSessionTarget] = useState('');
+
+  // New job form — agent + session target (separated)
+  const [newAgentId, setNewAgentId] = useState('');
+  const [newSessionMode, setNewSessionMode] = useState<'main' | 'isolated'>('main');
+
+  // New job form — schedule
+  const [newScheduleKind, setNewScheduleKind] = useState<ScheduleKind>('cron');
+  const [newCron, setNewCron] = useState('0 9 * * *');
+  const [newEveryMin, setNewEveryMin] = useState(60);
+  const [newAtDateTime, setNewAtDateTime] = useState('');
 
   useEffect(() => {
     loadJobs();
@@ -69,14 +97,14 @@ export default function CronJobs() {
         const uniq = Array.from(new Set<string>(list.length > 0 ? list : [effectiveDefault]));
         setAgentOptions(uniq);
         setDefaultAgent(effectiveDefault);
-        if (!uniq.includes(newSessionTarget)) {
-          setNewSessionTarget(effectiveDefault);
+        if (!newAgentId) {
+          setNewAgentId(effectiveDefault);
         }
       }
     } catch {
       setAgentOptions(['main']);
       setDefaultAgent('main');
-      if (!newSessionTarget) setNewSessionTarget('main');
+      if (!newAgentId) setNewAgentId('main');
     }
   };
 
@@ -111,18 +139,33 @@ export default function CronJobs() {
     }
   };
 
+  const buildSchedule = (): CronJob['schedule'] => {
+    if (newScheduleKind === 'cron') return { kind: 'cron', expr: newCron };
+    if (newScheduleKind === 'every') return { kind: 'every', everyMs: Math.max(1, newEveryMin) * 60000 };
+    // 'at'
+    const ms = newAtDateTime ? new Date(newAtDateTime).getTime() : Date.now() + 3600000;
+    return { kind: 'at', atMs: ms };
+  };
+
   const createJob = async () => {
     if (!newName.trim() || !newMessage.trim()) {
       setMsg(t.cron.fillRequired);
       setTimeout(() => setMsg(''), 2000);
       return;
     }
+    if (newScheduleKind === 'at' && !newAtDateTime) {
+      setMsg(locale === 'zh-CN' ? '请填写执行时间' : 'Please set execution time');
+      setTimeout(() => setMsg(''), 2000);
+      return;
+    }
+    const agentId = newAgentId || defaultAgent || 'main';
     const job: CronJob = {
       id: 'cron_' + Date.now(),
       name: newName.trim(),
       enabled: true,
-      schedule: { kind: 'cron', expr: newCron },
-      sessionTarget: newSessionTarget || defaultAgent || 'main',
+      agentId,
+      schedule: buildSchedule(),
+      sessionTarget: newSessionMode,
       wakeMode: 'now',
       payload: { kind: 'agentTurn', message: newMessage.trim(), deliver: newDeliver },
       state: {},
@@ -136,7 +179,12 @@ export default function CronJobs() {
       setShowCreate(false);
       setNewName('');
       setNewMessage('');
-      setNewSessionTarget(defaultAgent || 'main');
+      setNewAgentId(defaultAgent || 'main');
+      setNewSessionMode('main');
+      setNewScheduleKind('cron');
+      setNewCron('0 9 * * *');
+      setNewEveryMin(60);
+      setNewAtDateTime('');
       setTimeout(() => setMsg(''), 2000);
     } catch {
       loadJobs();
@@ -159,6 +207,15 @@ export default function CronJobs() {
     return <Clock size={13} className="text-gray-400" />;
   };
 
+  const inputCls = `w-full px-3.5 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:outline-none transition-all ${modern ? 'focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500' : 'focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500'}`;
+
+  // Schedule kind tab labels + icons
+  const scheduleKinds: { kind: ScheduleKind; label: string; icon: React.ReactNode }[] = [
+    { kind: 'cron', label: t.cron.scheduleKindCron, icon: <Clock size={13} /> },
+    { kind: 'every', label: t.cron.scheduleKindEvery, icon: <Timer size={13} /> },
+    { kind: 'at', label: t.cron.scheduleKindAt, icon: <CalendarClock size={13} /> },
+  ];
+
   return (
     <div className={`space-y-6 ${modern ? 'page-modern' : ''}`}>
       <div className={`${modern ? 'page-modern-header' : 'flex items-center justify-between'}`}>
@@ -178,8 +235,8 @@ export default function CronJobs() {
       </div>
 
       {msg && (
-        <div className={`px-4 py-3 rounded-xl text-sm font-medium flex items-center gap-2 ${msg.includes('失败') ? 'bg-red-50 dark:bg-red-900/30 text-red-600' : 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600'}`}>
-          {msg.includes('失败') ? <XCircle size={16} /> : <CheckCircle2 size={16} />}
+        <div className={`px-4 py-3 rounded-xl text-sm font-medium flex items-center gap-2 ${msg.includes('失败') || msg.includes('failed') || msg.includes('Failed') ? 'bg-red-50 dark:bg-red-900/30 text-red-600' : 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600'}`}>
+          {msg.includes('失败') || msg.includes('failed') || msg.includes('Failed') ? <XCircle size={16} /> : <CheckCircle2 size={16} />}
           {msg}
         </div>
       )}
@@ -193,48 +250,120 @@ export default function CronJobs() {
             </div>
             <h3 className="font-bold text-gray-900 dark:text-white">{t.cron.createJob}</h3>
           </div>
-          
+
+          {/* Row 1: name */}
+          <div className="space-y-1.5">
+            <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300">{t.cron.jobName}</label>
+            <input value={newName} onChange={e => setNewName(e.target.value)} placeholder={t.cron.jobNamePlaceholder}
+              className={inputCls} />
+          </div>
+
+          {/* Row 2: agent + session mode */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
             <div className="space-y-1.5">
-              <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300">{t.cron.jobName}</label>
-              <input value={newName} onChange={e => setNewName(e.target.value)} placeholder={t.cron.jobNamePlaceholder}
-                className={`w-full px-3.5 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:outline-none transition-all ${modern ? 'focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500' : 'focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500'}`} />
+              <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300">{t.cron.agentId}</label>
+              <select value={newAgentId} onChange={e => setNewAgentId(e.target.value)}
+                className={inputCls + ' font-mono'}>
+                {agentOptions.map(id => <option key={id} value={id}>{id}</option>)}
+              </select>
             </div>
             <div className="space-y-1.5">
-              <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300">{t.cron.cronExpr}</label>
-              <div className="relative">
-                <input value={newCron} onChange={e => setNewCron(e.target.value)} placeholder="0 9 * * *"
-                  className={`w-full px-3.5 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:outline-none transition-all font-mono ${modern ? 'focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500' : 'focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500'}`} />
-                <div className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">
-                  <Clock size={14} />
-                </div>
+              <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300">{t.cron.sessionMode}</label>
+              <div className="flex gap-2">
+                {(['main', 'isolated'] as const).map(mode => (
+                  <button key={mode} type="button"
+                    onClick={() => setNewSessionMode(mode)}
+                    className={`flex-1 py-2.5 text-xs font-semibold rounded-lg border transition-all ${
+                      newSessionMode === mode
+                        ? modern
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                          : 'bg-violet-600 text-white border-violet-600 shadow-sm'
+                        : 'bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
+                    }`}>
+                    {mode === 'main' ? t.cron.sessionModeMain : t.cron.sessionModeIsolated}
+                  </button>
+                ))}
               </div>
-              <p className="text-[10px] text-gray-400">{t.cron.cronHelp}</p>
+              <p className="text-[10px] text-gray-400">
+                {newSessionMode === 'isolated' ? (locale === 'zh-CN' ? '每次创建独立会话，互不干扰' : 'A fresh isolated session each run') : (locale === 'zh-CN' ? '复用 Agent 的主会话上下文' : 'Reuses the agent\'s main session')}
+              </p>
             </div>
           </div>
 
-          <div className="space-y-1.5">
-            <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300">{t.cron.sessionTarget}</label>
-            <select
-              value={newSessionTarget}
-              onChange={e => setNewSessionTarget(e.target.value)}
-              className={`w-full px-3.5 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:outline-none transition-all font-mono ${modern ? 'focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500' : 'focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500'}`}
-            >
-              {agentOptions.map(id => (
-                <option key={id} value={id}>{id}</option>
+          {/* Row 3: schedule kind tabs */}
+          <div className="space-y-3">
+            <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300">{t.cron.scheduleKind}</label>
+            <div className="flex gap-2">
+              {scheduleKinds.map(({ kind, label, icon }) => (
+                <button key={kind} type="button"
+                  onClick={() => setNewScheduleKind(kind)}
+                  className={`flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border transition-all ${
+                    newScheduleKind === kind
+                      ? modern
+                        ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                        : 'bg-violet-600 text-white border-violet-600 shadow-sm'
+                      : 'bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
+                  }`}>
+                  {icon}{label}
+                </button>
               ))}
-            </select>
+            </div>
+
+            {/* Schedule-specific inputs */}
+            {newScheduleKind === 'cron' && (
+              <div className="space-y-1.5">
+                <div className="relative">
+                  <input value={newCron} onChange={e => setNewCron(e.target.value)} placeholder="0 9 * * *"
+                    className={inputCls + ' font-mono pr-9'} />
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">
+                    <Clock size={14} />
+                  </div>
+                </div>
+                <p className="text-[10px] text-gray-400">{t.cron.cronHelp}</p>
+              </div>
+            )}
+
+            {newScheduleKind === 'every' && (
+              <div className="space-y-1.5">
+                <label className="block text-[10px] font-medium text-gray-500">{t.cron.intervalMinutes}</label>
+                <div className="flex items-center gap-3">
+                  <input type="number" min={1} value={newEveryMin}
+                    onChange={e => setNewEveryMin(Math.max(1, parseInt(e.target.value) || 1))}
+                    className={inputCls + ' font-mono w-32'} />
+                  <span className="text-sm text-gray-500">{locale === 'zh-CN' ? '分钟' : 'minutes'}</span>
+                  <span className="text-xs text-gray-400 font-mono bg-gray-50 dark:bg-gray-900 px-2 py-1 rounded border border-gray-100 dark:border-gray-800">
+                    everyMs: {newEveryMin * 60000}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {newScheduleKind === 'at' && (
+              <div className="space-y-1.5">
+                <label className="block text-[10px] font-medium text-gray-500">{t.cron.atDateTime}</label>
+                <input type="datetime-local" value={newAtDateTime}
+                  onChange={e => setNewAtDateTime(e.target.value)}
+                  className={inputCls + ' font-mono'} />
+                <p className="text-[10px] text-gray-400">
+                  {locale === 'zh-CN'
+                    ? '一次性执行，到期运行后任务会自动删除；若要保留，请在 Advanced JSON 中设置 deleteAfterRun=false。'
+                    : 'Runs once at the specified time, then is automatically deleted; set deleteAfterRun=false in Advanced JSON to retain it.'}
+                </p>
+              </div>
+            )}
           </div>
-          
+
+          {/* Row 4: message */}
           <div className="space-y-1.5">
             <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300">{t.cron.messageContent}</label>
             <textarea value={newMessage} onChange={e => setNewMessage(e.target.value)} placeholder={t.cron.messagePlaceholder}
-              rows={3} className={`w-full px-3.5 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:outline-none transition-all resize-none ${modern ? 'focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500' : 'focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500'}`} />
+              rows={3} className={inputCls + ' resize-none'} />
           </div>
-          
+
+          {/* Row 5: deliver + actions */}
           <div className="flex items-center justify-between pt-2">
             <label className="flex items-center gap-2.5 cursor-pointer group">
-              <input type="checkbox" checked={newDeliver} onChange={e => setNewDeliver(e.target.checked)} 
+              <input type="checkbox" checked={newDeliver} onChange={e => setNewDeliver(e.target.checked)}
                 className={`w-4 h-4 rounded border-gray-300 transition-colors ${modern ? 'text-blue-600 focus:ring-blue-500' : 'text-violet-600 focus:ring-violet-500'}`} />
               <span className="text-sm text-gray-600 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-gray-200 transition-colors">{t.cron.deliverToChannel}</span>
             </label>
@@ -260,87 +389,96 @@ export default function CronJobs() {
         </div>
       ) : (
         <div className="grid gap-3">
-          {jobs.map(job => (
-            <div key={job.id} className={`${modern ? 'page-modern-panel hover:shadow-md transition-all group overflow-hidden' : 'bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700/50 hover:shadow-md transition-all group overflow-hidden'}`}>
-              <div className="flex items-center gap-4 p-4 cursor-pointer" onClick={() => setExpandedId(expandedId === job.id ? null : job.id)}>
-                <div className={`p-2.5 rounded-xl shrink-0 transition-colors border ${job.enabled ? 'bg-blue-100/80 dark:bg-blue-900/20 border-blue-100 dark:border-blue-800/30 text-blue-600 dark:text-blue-300' : 'bg-gray-100 dark:bg-gray-800 border-transparent text-gray-400'}`}>
-                  <Clock size={20} />
-                </div>
-                
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-3 mb-1">
-                    <span className="text-base font-bold text-gray-900 dark:text-white truncate">{job.name}</span>
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${job.enabled ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400' : 'bg-gray-100 dark:bg-gray-700 text-gray-500'}`}>
-                      {job.enabled ? t.common.running : t.common.paused}
-                    </span>
+          {jobs.map(job => {
+            const effectiveAgentId = resolveAgentId(job, defaultAgent);
+            const effectiveSessionMode = resolveSessionMode(job);
+            return (
+              <div key={job.id} className={`${modern ? 'page-modern-panel hover:shadow-md transition-all group overflow-hidden' : 'bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700/50 hover:shadow-md transition-all group overflow-hidden'}`}>
+                <div className="flex items-center gap-4 p-4 cursor-pointer" onClick={() => setExpandedId(expandedId === job.id ? null : job.id)}>
+                  <div className={`p-2.5 rounded-xl shrink-0 transition-colors border ${job.enabled ? 'bg-blue-100/80 dark:bg-blue-900/20 border-blue-100 dark:border-blue-800/30 text-blue-600 dark:text-blue-300' : 'bg-gray-100 dark:bg-gray-800 border-transparent text-gray-400'}`}>
+                    <Clock size={20} />
                   </div>
-                  <div className="flex items-center gap-4 text-xs text-gray-500">
-                    <span className="font-mono bg-gray-50 dark:bg-gray-900/50 px-1.5 py-0.5 rounded border border-gray-100 dark:border-gray-800">{formatSchedule(job.schedule)}</span>
-                    {job.state.lastRunAtMs && (
-                      <span className="flex items-center gap-1.5">
-                        {statusIcon(job.state.lastStatus)}
-                        {t.cron.lastRun}: {new Date(job.state.lastRunAtMs).toLocaleString()}
+
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-3 mb-1">
+                      <span className="text-base font-bold text-gray-900 dark:text-white truncate">{job.name}</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${job.enabled ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400' : 'bg-gray-100 dark:bg-gray-700 text-gray-500'}`}>
+                        {job.enabled ? t.common.running : t.common.paused}
                       </span>
-                    )}
+                    </div>
+                    <div className="flex items-center gap-4 text-xs text-gray-500 flex-wrap">
+                      <span className="font-mono bg-gray-50 dark:bg-gray-900/50 px-1.5 py-0.5 rounded border border-gray-100 dark:border-gray-800">{formatSchedule(job.schedule)}</span>
+                      <span className="font-mono text-blue-500/80">@{effectiveAgentId}</span>
+                      {job.state.lastRunAtMs && (
+                        <span className="flex items-center gap-1.5">
+                          {statusIcon(job.state.lastStatus)}
+                          {t.cron.lastRun}: {new Date(job.state.lastRunAtMs).toLocaleString()}
+                        </span>
+                      )}
+                    </div>
                   </div>
+
+                  <div className="flex items-center gap-2 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
+                    <button onClick={() => toggleJob(job.id)}
+                      className={`p-2 rounded-lg transition-colors ${job.enabled ? 'text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20' : 'text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20'}`}
+                      title={job.enabled ? t.common.paused : t.common.enabled}>
+                      {job.enabled ? <Pause size={16} /> : <Play size={16} />}
+                    </button>
+                    <button onClick={() => deleteJob(job.id)} className="p-2 rounded-lg text-red-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" title={t.common.delete}>
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+
+                  <ChevronDown size={16} className={`text-gray-300 transition-transform duration-200 ${expandedId === job.id ? 'rotate-180 text-gray-500' : ''}`} />
                 </div>
-                
-                <div className="flex items-center gap-2 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
-                  <button onClick={() => toggleJob(job.id)} 
-                    className={`p-2 rounded-lg transition-colors ${job.enabled ? 'text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20' : 'text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20'}`} 
-                    title={job.enabled ? t.common.paused : t.common.enabled}>
-                    {job.enabled ? <Pause size={16} /> : <Play size={16} />}
-                  </button>
-                  <button onClick={() => deleteJob(job.id)} className="p-2 rounded-lg text-red-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" title={t.common.delete}>
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-                
-                <ChevronDown size={16} className={`text-gray-300 transition-transform duration-200 ${expandedId === job.id ? 'rotate-180 text-gray-500' : ''}`} />
-              </div>
-              
-              {expandedId === job.id && (
-                <div className="px-6 pb-6 pt-2 border-t border-gray-50 dark:border-gray-800 bg-gray-50/30 dark:bg-gray-900/20">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-y-4 gap-x-8 text-sm">
-                    <div className="space-y-1">
-                      <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{t.cron.sessionTarget}</span>
-                      <div className="font-mono text-gray-700 dark:text-gray-300">{job.sessionTarget}</div>
-                    </div>
-                    <div className="space-y-1">
-                      <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{t.cron.wakeMode}</span>
-                      <div className="font-mono text-gray-700 dark:text-gray-300">{job.wakeMode}</div>
-                    </div>
-                    <div className="space-y-1">
-                      <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{t.cron.jobType}</span>
-                      <div className="font-mono text-gray-700 dark:text-gray-300">{job.payload.kind}</div>
-                    </div>
-                    {job.payload.deliver !== undefined && (
+
+                {expandedId === job.id && (
+                  <div className="px-6 pb-6 pt-2 border-t border-gray-50 dark:border-gray-800 bg-gray-50/30 dark:bg-gray-900/20">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-y-4 gap-x-8 text-sm">
                       <div className="space-y-1">
-                        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{t.cron.resultPush}</span>
-                        <div className={`font-medium ${job.payload.deliver ? 'text-emerald-600' : 'text-gray-500'}`}>{job.payload.deliver ? t.common.on : t.common.off}</div>
+                        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{t.cron.agentId}</span>
+                        <div className="font-mono text-blue-600 dark:text-blue-400">{effectiveAgentId}</div>
                       </div>
-                    )}
-                    
-                    {job.state.lastError && (
-                      <div className="md:col-span-2 bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-100 dark:border-red-900/30">
-                        <span className="text-xs font-bold text-red-500 uppercase tracking-wider block mb-1">{t.cron.execError}</span>
-                        <div className="text-xs text-red-600 dark:text-red-400 font-mono break-all">{job.state.lastError}</div>
+                      <div className="space-y-1">
+                        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{t.cron.sessionMode}</span>
+                        <div className="font-mono text-gray-700 dark:text-gray-300">{effectiveSessionMode}</div>
                       </div>
-                    )}
-                    
-                    {(job.payload.text || job.payload.message) && (
-                      <div className="md:col-span-2 space-y-1.5">
-                        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{t.cron.messageContent}</span>
-                        <div className={`${modern ? 'p-3 rounded-xl bg-white/75 dark:bg-slate-900/55 border border-blue-100/70 dark:border-slate-700/70 text-xs font-mono text-gray-600 dark:text-gray-300 whitespace-pre-wrap shadow-sm backdrop-blur-xl' : 'p-3 rounded-lg bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 text-xs font-mono text-gray-600 dark:text-gray-300 whitespace-pre-wrap shadow-sm'}`}>
-                          {job.payload.text || job.payload.message}
+                      <div className="space-y-1">
+                        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{t.cron.wakeMode}</span>
+                        <div className="font-mono text-gray-700 dark:text-gray-300">{job.wakeMode}</div>
+                      </div>
+                      <div className="space-y-1">
+                        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{t.cron.jobType}</span>
+                        <div className="font-mono text-gray-700 dark:text-gray-300">{job.payload.kind}</div>
+                      </div>
+                      {job.payload.deliver !== undefined && (
+                        <div className="space-y-1">
+                          <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{t.cron.resultPush}</span>
+                          <div className={`font-medium ${job.payload.deliver ? 'text-emerald-600' : 'text-gray-500'}`}>{job.payload.deliver ? t.common.on : t.common.off}</div>
                         </div>
-                      </div>
-                    )}
+                      )}
+
+                      {job.state.lastError && (
+                        <div className="md:col-span-2 bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-100 dark:border-red-900/30">
+                          <span className="text-xs font-bold text-red-500 uppercase tracking-wider block mb-1">{t.cron.execError}</span>
+                          <div className="text-xs text-red-600 dark:text-red-400 font-mono break-all">{job.state.lastError}</div>
+                        </div>
+                      )}
+
+                      {(job.payload.text || job.payload.message) && (
+                        <div className="md:col-span-2 space-y-1.5">
+                          <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{t.cron.messageContent}</span>
+                          <div className={`${modern ? 'p-3 rounded-xl bg-white/75 dark:bg-slate-900/55 border border-blue-100/70 dark:border-slate-700/70 text-xs font-mono text-gray-600 dark:text-gray-300 whitespace-pre-wrap shadow-sm backdrop-blur-xl' : 'p-3 rounded-lg bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 text-xs font-mono text-gray-600 dark:text-gray-300 whitespace-pre-wrap shadow-sm'}`}>
+                            {job.payload.text || job.payload.message}
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
-          ))}
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

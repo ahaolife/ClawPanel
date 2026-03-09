@@ -216,7 +216,6 @@ export interface Translations {
     deleted: string;
     deleteFailed: string;
     deleteConfirm: string;
-    sessionTarget: string;
     wakeMode: string;
     jobType: string;
     resultPush: string;
@@ -224,6 +223,16 @@ export interface Translations {
     lastRun: string;
     everyMinutes: string;
     oneTime: string;
+    agentId: string;
+    sessionMode: string;
+    sessionModeMain: string;
+    sessionModeIsolated: string;
+    scheduleKind: string;
+    scheduleKindCron: string;
+    scheduleKindEvery: string;
+    scheduleKindAt: string;
+    intervalMinutes: string;
+    atDateTime: string;
   };
 
   // Skills

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useOutletContext } from 'react-router-dom';
 import { api } from '../lib/api';
 import { Plus, RefreshCw, Save, Trash2, ArrowUp, ArrowDown, Route, Bot, Settings, Brain, Shield, ChevronDown, ChevronRight, Sparkles, FileText } from 'lucide-react';
 
@@ -58,7 +59,7 @@ interface AgentFormState {
   toolDeny: string;
   agentToAgentMode: InheritToggle;
   agentToAgentAllow: string;
-  sessionVisibility: '' | 'same-agent' | 'all-agents';
+  sessionVisibility: SessionVisibility;
   subagentAllowAgents: string;
   modelText: string;
   toolsText: string;
@@ -87,11 +88,20 @@ interface AgentDefaultsState {
   compactionMaxHistoryShare?: number;
 }
 
+interface BindingAcpDraft {
+  mode: string;
+  label: string;
+  cwd: string;
+  backend: string;
+}
+
 interface BindingDraft {
-  name: string;
-  agent: string;
+  type: 'route' | 'acp';
+  agentId: string;
+  comment: string;
   enabled: boolean;
   match: Record<string, any>;
+  acp: BindingAcpDraft;
   matchText: string;
   mode: 'structured' | 'json';
   rowError?: string;
@@ -100,6 +110,7 @@ interface BindingDraft {
 interface PreviewResult {
   agent?: string;
   matchedBy?: string;
+  matchedIndex?: number;
   trace?: string[];
 }
 
@@ -131,6 +142,12 @@ interface AgentCoreFileEntry {
   content: string;
 }
 
+interface CoreFilesLoadState {
+  kind: 'ready' | 'missing' | 'restricted' | 'error';
+  message?: string;
+  workspace?: string;
+}
+
 interface SkillEntry {
   id: string;
   name: string;
@@ -140,11 +157,20 @@ interface SkillEntry {
   version?: string;
 }
 
+interface AgentSkillsContext {
+  agentId: string;
+  workspace: string;
+}
+
+type SessionVisibility = '' | 'self' | 'tree' | 'agent' | 'all';
+
 interface CronJob {
   id: string;
   name: string;
   enabled: boolean;
+  agentId?: string;
   sessionTarget: string;
+  wakeMode?: string;
   schedule: { kind: string; expr?: string; everyMs?: number; atMs?: number; tz?: string };
   state?: { nextRunAtMs?: number; lastRunAtMs?: number; lastStatus?: string; lastError?: string };
 }
@@ -239,7 +265,7 @@ const AGENT_DIRECTORY_TABS: { id: AgentDetailTab; title: string; description: st
   { id: 'model', title: '模型与身份 (Model & Identity)', description: '模型、参数与身份口吻' },
   { id: 'tools', title: '工具与权限 (Tools & Access)', description: '工具策略、委派与 sandbox' },
   { id: 'files', title: '核心文件 (Core Files)', description: '查看并编辑工作区里的关键文档' },
-  { id: 'capabilities', title: '技能与上下文 (Skills · Channels · Cron)', description: '补齐官方单 Agent 面板的运行态快照' },
+  { id: 'capabilities', title: '技能与运行态 (Skills · Routing · Cron)', description: '按当前 Agent 的 workspace / bindings / cron 观察有效结果' },
   { id: 'context', title: '路由上下文 (Routing Context)', description: '查看它被哪些规则和会话引用' },
   { id: 'advanced', title: '高级 JSON (Advanced)', description: '需要完整 JSON 时再进入' },
 ];
@@ -259,6 +285,7 @@ const AGENT_CORE_FILE_META: Record<string, { label: string; description: string 
   'IDENTITY.md': { label: '身份设定 (IDENTITY.md)', description: '描述角色、人设和对外表达方式。' },
   'USER.md': { label: '用户偏好 (USER.md)', description: '放业务方偏好、长期协作约定与注意事项。' },
   'HEARTBEAT.md': { label: '自检节奏 (HEARTBEAT.md)', description: '约定这个 Agent 的周期性自检或提醒。' },
+  'BOOT.md': { label: '启动检查 (BOOT.md)', description: 'Gateway 重启时可执行的简短启动检查清单。' },
   'BOOTSTRAP.md': { label: '启动引导 (BOOTSTRAP.md)', description: '首次加载时最应该先看的说明或初始化步骤。' },
   'MEMORY.md': { label: '记忆摘录 (MEMORY.md)', description: '存放长期记忆或需要沉淀给后续会话的内容。' },
 };
@@ -292,13 +319,13 @@ const PREVIEW_FIELD_META: Record<PreviewMetaKey, { label: string; placeholder: s
   },
   accountId: {
     label: '账号',
-    placeholder: '留空=按默认账号预览，*=全部账号',
-    help: '留空时，面板会在已知 channel 下自动代入 defaultAccount；需要测试兜底规则时再写 *。',
+    placeholder: '留空=按默认账号预览',
+    help: '留空时，面板会在已知 channel 下自动代入 defaultAccount；需要验证指定账号规则时再填写。',
   },
   sender: {
     label: '发送者',
-    placeholder: '例如 +15551230001',
-    help: '通常用于特定联系人、特定用户或机器人分流。',
+    placeholder: '例如 user-10001',
+    help: '仅旧版 sender 兼容规则需要填写；普通按 peer 路由时通常留空。',
   },
   peer: {
     label: '会话',
@@ -330,15 +357,33 @@ const PREVIEW_FIELD_META: Record<PreviewMetaKey, { label: string; placeholder: s
 const PREVIEW_GROUPS: { title: string; description: string; fields: PreviewMetaKey[] }[] = [
   {
     title: '消息来源',
-    description: '先描述消息来自哪个通道、哪个账号、谁发的。',
+    description: '先描述消息来自哪个通道、哪个账号；旧 sender 规则时再补发送者。',
     fields: ['channel', 'accountId', 'sender'],
   },
   {
     title: '会话范围',
-    description: '当你要验证群聊、频道、服务器或线程规则时，再补这些条件。',
+    description: '当你要验证会话、父会话继承、Discord 或 Slack 场景时，再补这些条件。',
     fields: ['peer', 'parentPeer', 'guildId', 'teamId', 'roles'],
   },
 ];
+
+const BINDING_TYPE_OPTIONS: Array<{ value: 'route' | 'acp'; label: string; description: string }> = [
+  { value: 'route', label: '路由规则（route）', description: '把匹配到的消息交给目标 Agent。' },
+  { value: 'acp', label: 'ACP 规则（acp）', description: '在命中时附带 ACP 执行配置。' },
+];
+
+const OFFICIAL_MATCHED_BY_LABELS: Record<string, string> = {
+  'binding.sender': '发送者（sender）',
+  'binding.peer': '会话（peer）',
+  'binding.peer.parent': '父会话继承（parent peer）',
+  'binding.guild+roles': '服务器 + 角色（guild + roles）',
+  'binding.guild': '服务器（guild）',
+  'binding.team': '团队 / 工作区（team）',
+  'binding.account': '账号（account）',
+  'binding.account.wildcard': '账号通配（accountId: *）',
+  'binding.channel': '通道（channel）',
+  default: '默认兜底',
+};
 
 function isPlainObject(v: any): v is Record<string, any> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
@@ -380,6 +425,35 @@ function normalizePeerValue(v: any): { kind: string; id: string } | null {
   return null;
 }
 
+function normalizeSessionVisibility(raw: any): SessionVisibility {
+  const value = String(raw || '').trim();
+  switch (value) {
+    case 'same-agent':
+      return 'agent';
+    case 'all-agents':
+      return 'all';
+    case 'self':
+    case 'tree':
+    case 'agent':
+    case 'all':
+      return value;
+    default:
+      return '';
+  }
+}
+
+function extractAcpDraft(raw: any): BindingAcpDraft {
+  if (!isPlainObject(raw)) {
+    return { mode: '', label: '', cwd: '', backend: '' };
+  }
+  return {
+    mode: String(raw.mode || '').trim(),
+    label: String(raw.label || '').trim(),
+    cwd: String(raw.cwd || '').trim(),
+    backend: String(raw.backend || '').trim(),
+  };
+}
+
 function compactMatch(raw: any): Record<string, any> {
   if (!isPlainObject(raw)) return {};
   const out: Record<string, any> = {};
@@ -388,27 +462,39 @@ function compactMatch(raw: any): Record<string, any> {
     const v = raw[key];
     if (v === undefined || v === null) continue;
 
-    if (key === 'peer' || key === 'parentPeer') {
+    if (key === 'peer') {
       if (isPlainObject(v)) {
         const peer = normalizePeerValue(v);
-        if (!peer || !peer.kind) continue;
-        out[key] = peer.id ? { kind: peer.kind, id: peer.id } : { kind: peer.kind };
+        if (!peer || !peer.kind || !peer.id) continue;
+        out[key] = { kind: peer.kind, id: peer.id };
         continue;
       }
       if (typeof v === 'string') {
-        const s = v.trim();
-        if (!s) continue;
-        out[key] = s;
+        const peer = normalizePeerValue(v);
+        if (!peer || !peer.kind || !peer.id) continue;
+        out[key] = `${peer.kind}:${peer.id}`;
         continue;
-      }
-      if (Array.isArray(v)) {
-        const arr = v.map(item => String(item).trim()).filter(Boolean);
-        if (arr.length > 0) out[key] = arr;
       }
       continue;
     }
 
-    if (Array.isArray(v)) {
+    if (key === 'parentPeer') {
+      if (isPlainObject(v)) {
+        const peer = normalizePeerValue(v);
+        if (!peer || !peer.kind || !peer.id) continue;
+        out[key] = { kind: peer.kind, id: peer.id };
+        continue;
+      }
+      if (typeof v === 'string') {
+        const peer = normalizePeerValue(v);
+        if (!peer || !peer.kind || !peer.id) continue;
+        out[key] = `${peer.kind}:${peer.id}`;
+        continue;
+      }
+      continue;
+    }
+
+    if (key === 'roles' && Array.isArray(v)) {
       const arr = v.map(item => String(item).trim()).filter(Boolean);
       if (arr.length > 0) out[key] = arr;
       continue;
@@ -432,14 +518,18 @@ function isStructuredMatchSupported(match: Record<string, any>): boolean {
     if (!ALLOWED_MATCH_KEYS.includes(key)) return false;
     const v = match[key];
     if (key === 'roles') {
-      if (typeof v === 'string') continue;
-      if (Array.isArray(v) && v.every(item => typeof item === 'string')) continue;
+      if (Array.isArray(v) && v.every(item => typeof item === 'string' && item.trim())) continue;
       return false;
     }
     if (key === 'peer' || key === 'parentPeer') {
-      if (typeof v === 'string') continue;
       if (isPlainObject(v)) {
-        if (normalizePeerValue(v)) continue;
+        const peer = normalizePeerValue(v);
+        if (peer?.kind && peer.id) continue;
+        return false;
+      }
+      if (typeof v === 'string') {
+        const peer = normalizePeerValue(v);
+        if (peer?.kind && peer.id) continue;
         return false;
       }
       return false;
@@ -454,25 +544,16 @@ function toBindingDraft(raw: any, fallbackAgent: string): BindingDraft {
   const match = compactMatch(isPlainObject(raw?.match) ? deepClone(raw.match) : {});
   const mode: 'structured' | 'json' = isStructuredMatchSupported(match) ? 'structured' : 'json';
   return {
-    name: String(raw?.name || ''),
-    agent: String(raw?.agentId || raw?.agent || fallbackAgent || 'main'),
+    type: String(raw?.type || '').trim() === 'acp' ? 'acp' : 'route',
+    agentId: String(raw?.agentId || raw?.agent || fallbackAgent || 'main'),
+    comment: String(raw?.comment || raw?.name || ''),
     enabled: raw?.enabled !== false,
     match,
+    acp: extractAcpDraft(raw?.acp),
     mode,
     matchText: JSON.stringify(match, null, 2),
     rowError: '',
   };
-}
-
-function hasWildcard(raw: any): boolean {
-  if (typeof raw === 'string') {
-    const s = raw.trim();
-    return /[*?\[\]]/.test(s);
-  }
-  if (Array.isArray(raw)) {
-    return raw.some(hasWildcard);
-  }
-  return false;
 }
 
 function parseCSV(input: string): string[] {
@@ -497,7 +578,8 @@ function matchPriorityLabel(matchRaw: any): string {
   if ('guildId' in match && 'roles' in match) return 'guildId+roles';
   if ('guildId' in match) return 'guildId';
   if ('teamId' in match) return 'teamId';
-  if ('accountId' in match) return hasWildcard(match.accountId) ? 'accountId:*' : 'accountId';
+  if ('accountId' in match && extractTextValue(match.accountId) !== '*') return 'accountId';
+  if ('accountId' in match && extractTextValue(match.accountId) === '*') return 'accountId:*';
   if ('channel' in match) return 'channel';
   return 'generic';
 }
@@ -516,14 +598,22 @@ function validateBindingMatchClient(matchRaw: any, idx: number): string | null {
     return `第 ${idx} 条 binding 缺少 match.channel`;
   }
   for (const key of Object.keys(match)) {
+    if (['channel', 'guildId', 'teamId', 'accountId'].includes(key) && !extractTextValue(match[key])) {
+      return `第 ${idx} 条 binding 的 ${key} 必须是非空字符串`;
+    }
     if (key === 'roles' && !('guildId' in match)) {
       return `第 ${idx} 条 binding 的 roles 必须与 guildId 同时使用`;
     }
-    if ((key === 'peer' || key === 'parentPeer') && isPlainObject(match[key])) {
+    if (key === 'roles' && !Array.isArray(match[key])) {
+      return `第 ${idx} 条 binding 的 roles 必须是字符串数组`;
+    }
+    if ((key === 'peer' || key === 'parentPeer') && (isPlainObject(match[key]) || typeof match[key] === 'string')) {
       const peer = normalizePeerValue(match[key]);
-      if (!peer || !peer.kind) {
-        return `第 ${idx} 条 binding 的 ${key}.kind 不能为空`;
+      if (!peer?.kind || !peer.id) {
+        return `第 ${idx} 条 binding 的 ${key} 必须是 kind:id 字符串或 { kind, id } 对象`;
       }
+    } else if (key === 'peer' || key === 'parentPeer') {
+      return `第 ${idx} 条 binding 的 ${key} 必须是 kind:id 字符串或 { kind, id } 对象`;
     }
   }
   return null;
@@ -556,6 +646,54 @@ function formatDateTime(raw?: string | number): string {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN');
 }
 
+function resolveCronJobAgentID(job: CronJob, fallbackAgent: string): string {
+  const agentID = String(job.agentId || '').trim();
+  if (agentID) return agentID;
+  const legacyTarget = String(job.sessionTarget || '').trim();
+  if (legacyTarget && legacyTarget !== 'main' && legacyTarget !== 'isolated') return legacyTarget;
+  return fallbackAgent;
+}
+
+function humanizeSkillSource(source: string): string {
+  switch (source) {
+    case 'workspace':
+      return 'workspace/skills';
+    case 'workspace-agent':
+      return 'workspace/.agents/skills';
+    case 'managed':
+      return '~/.openclaw/skills';
+    case 'global-agent':
+      return '~/.agents/skills';
+    case 'app-skill':
+      return 'bundled';
+    case 'plugin-skill':
+      return 'plugin skill';
+    case 'extra-dir':
+      return 'extraDirs';
+    default:
+      return source || 'unknown';
+  }
+}
+
+function summarizeSkillSourceGroup(source: string): 'workspace' | 'shared' | 'bundled' | 'plugin' | 'extra' | 'other' {
+  switch (source) {
+    case 'workspace':
+    case 'workspace-agent':
+      return 'workspace';
+    case 'managed':
+    case 'global-agent':
+      return 'shared';
+    case 'app-skill':
+      return 'bundled';
+    case 'plugin-skill':
+      return 'plugin';
+    case 'extra-dir':
+      return 'extra';
+    default:
+      return 'other';
+  }
+}
+
 function formatFileSize(size?: number): string {
   if (!size) return '0 B';
   if (size < 1024) return `${size} B`;
@@ -576,7 +714,7 @@ function humanizeMatchField(key: string): string {
     case 'peer':
       return '会话';
     case 'parentPeer':
-      return '上级会话';
+      return '父会话继承';
     case 'guildId':
       return 'Discord 服务器';
     case 'guildId+roles':
@@ -601,7 +739,7 @@ function humanizeBindingPriority(priority: string): string {
     case 'peer':
       return '会话';
     case 'parentPeer':
-      return '上级会话';
+      return '父会话继承';
     case 'guildId+roles':
       return 'Discord 服务器 + 角色';
     case 'guildId':
@@ -625,9 +763,17 @@ function describeTriState(raw: InheritToggle, enabledLabel: string, disabledLabe
   return '继承默认';
 }
 
-function describeSessionVisibility(raw: '' | 'same-agent' | 'all-agents'): string {
-  if (raw === 'same-agent') return '仅当前 Agent';
-  if (raw === 'all-agents') return '所有 Agent';
+function describeSessionVisibility(raw: any): string {
+  switch (normalizeSessionVisibility(raw)) {
+    case 'self':
+      return '仅当前会话';
+    case 'tree':
+      return '当前会话树';
+    case 'agent':
+      return '当前 Agent 的全部会话';
+    case 'all':
+      return '所有会话';
+  }
   return '继承默认';
 }
 
@@ -768,12 +914,12 @@ function buildBindingSummary(matchRaw: any, channelMeta: Record<string, ChannelM
   const teamId = extractTextValue(match.teamId);
 
   if (channel) parts.push(`通道 ${channel}`);
-  if (accountId === '*') parts.push('全部账号');
+  if (accountId === '*') parts.push('全部账号（按通道级规则处理）');
   else if (accountId) parts.push(`账号 ${accountId}`);
   else if (channel) parts.push(`默认账号${channelMeta[channel]?.defaultAccount ? ` (${channelMeta[channel]?.defaultAccount})` : ''}`);
   if (sender) parts.push(`发送者 ${sender}`);
   if (peer.kind) parts.push(`会话 ${peer.kind}${peer.id ? `:${peer.id}` : ''}`);
-  if (parentPeer.kind) parts.push(`上级 ${parentPeer.kind}${parentPeer.id ? `:${parentPeer.id}` : ''}`);
+  if (parentPeer.kind) parts.push(`父会话 ${parentPeer.kind}${parentPeer.id ? `:${parentPeer.id}` : ''}`);
   if (guildId && roles) parts.push(`Discord ${guildId} / ${roles}`);
   else if (guildId) parts.push(`Discord ${guildId}`);
   else if (roles) parts.push(`角色 ${roles}`);
@@ -789,7 +935,7 @@ function buildBindingTags(matchRaw: any): string[] {
   if ('accountId' in match) tags.push(extractTextValue(match.accountId) === '*' ? '全部账号' : '账号');
   if (extractTextValue(match.sender)) tags.push('发送者');
   if (extractPeerForm(match, 'peer').kind) tags.push('会话');
-  if (extractPeerForm(match, 'parentPeer').kind) tags.push('上级会话');
+  if (extractPeerForm(match, 'parentPeer').kind) tags.push('父会话');
   if (extractTextValue(match.guildId)) tags.push('Discord');
   if (extractRolesText(match)) tags.push('角色');
   if (extractTextValue(match.teamId)) tags.push('Slack');
@@ -827,6 +973,13 @@ function buildPreviewMetaPayload(previewMeta: Record<PreviewMetaKey, string>, ch
       if (roles.length > 0) meta[key] = roles;
       continue;
     }
+    if (key === 'peer' || key === 'parentPeer') {
+      const peer = normalizePeerValue(text);
+      if (peer?.kind && peer.id) {
+        meta[key] = { kind: peer.kind, id: peer.id };
+        continue;
+      }
+    }
     meta[key] = text;
   }
 
@@ -837,6 +990,52 @@ function buildPreviewMetaPayload(previewMeta: Record<PreviewMetaKey, string>, ch
   }
 
   return meta;
+}
+
+function validateAvatarValue(raw: string): string {
+  const value = raw.trim();
+  if (!value) return '';
+  const lower = value.toLowerCase();
+  if (lower.startsWith('http://') || lower.startsWith('https://')) return '';
+  if (lower.startsWith('data:image/') || lower.startsWith('data:')) return '';
+  if (value.startsWith('~')) return '头像不支持以 ~ 开头，请使用工作区相对路径、http(s) URL 或 data URI。';
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return '头像仅支持 http(s) URL、data URI 或工作区相对路径。';
+  if (value.startsWith('/')) return '头像不支持绝对路径，请改用工作区相对路径。';
+  return '';
+}
+
+function resolveAvatarPreviewSrc(agentId: string | undefined, avatar: string): string {
+  const value = avatar.trim();
+  if (!value || validateAvatarValue(value)) return '';
+  if (/^https?:\/\//i.test(value) || /^data:/i.test(value)) return value;
+  if (!agentId) return '';
+  return api.agentIdentityAvatarUrl(agentId);
+}
+
+function parseIdentityMarkdown(content: string): Partial<Record<'name' | 'theme' | 'emoji' | 'avatar' | 'creature' | 'vibe', string>> {
+  const result: Partial<Record<'name' | 'theme' | 'emoji' | 'avatar' | 'creature' | 'vibe', string>> = {};
+  for (const rawLine of content.split('\n')) {
+    let line = rawLine.trim();
+    if (!line.includes(':')) continue;
+    line = line.replace(/^[-*]\s*/, '');
+    const [rawKey, ...rest] = line.split(':');
+    const key = rawKey.trim().toLowerCase().replace(/[*_]/g, '');
+    const value = rest.join(':').trim().replace(/^[(*\s]+|[)*\s]+$/g, '');
+    if (!value) continue;
+    if (key === 'name' || key === 'theme' || key === 'emoji' || key === 'avatar' || key === 'creature' || key === 'vibe') {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+function classifyCoreFilesLoadState(error: string, workspace?: string): CoreFilesLoadState {
+  if (!error) return { kind: 'error', message: '读取核心文件失败', workspace };
+  if (error.includes('未配置')) return { kind: 'missing', message: error, workspace };
+  if (error.includes('受管工作区') || error.includes('符号链接') || error.includes('受保护') || error.includes('暂不支持')) {
+    return { kind: 'restricted', message: error, workspace };
+  }
+  return { kind: 'error', message: error, workspace };
 }
 
 function stringifyJSON(raw: any): string {
@@ -1097,10 +1296,7 @@ function createAgentFormState(agent?: AgentItem): AgentFormState {
     toolDeny: parseStringList(getNestedValue(tools, 'deny')).join(', '),
     agentToAgentMode: triStateFromValue(getNestedValue(tools, 'agentToAgent.enabled')),
     agentToAgentAllow: parseStringList(getNestedValue(tools, 'agentToAgent.allow')).join(', '),
-    sessionVisibility: (() => {
-      const raw = getNestedValue(tools, 'sessions.visibility');
-      return raw === 'same-agent' || raw === 'all-agents' ? raw : '';
-    })(),
+    sessionVisibility: normalizeSessionVisibility(getNestedValue(tools, 'sessions.visibility')),
     subagentAllowAgents: parseStringList(getNestedValue(subagents, 'allowAgents')).join(', '),
     modelText: stringifyJSON(agent?.model),
     toolsText: stringifyJSON(agent?.tools),
@@ -1141,28 +1337,22 @@ function buildPreviewExplanation(result: PreviewResult | null, bindings: Binding
       ruleLabel: '默认回落',
     };
   }
-
-  const matched = result.matchedBy.match(/^bindings\[(\d+)\]\.match\.(.+)$/);
-  if (!matched) {
-    return {
-      headline: `消息会交给 Agent「${agentID}」`,
-      detail: `命中条件：${result.matchedBy}`,
-      ruleLabel: result.matchedBy,
-    };
-  }
-
-  const index = Number(matched[1]);
-  const field = matched[2];
-  const binding = bindings[index];
-  const ruleName = binding?.name?.trim() || `规则 ${index + 1}`;
+  const ruleLabel = OFFICIAL_MATCHED_BY_LABELS[result.matchedBy || ''] || result.matchedBy || '显式规则';
+  const index = typeof result.matchedIndex === 'number' && result.matchedIndex >= 0 ? result.matchedIndex : -1;
+  const binding = index >= 0 ? bindings[index] : undefined;
+  const bindingLabel = binding?.comment?.trim() || (index >= 0 ? `规则 ${index + 1}` : '显式规则');
   return {
     headline: `消息会交给 Agent「${agentID}」`,
-    detail: `命中了「${ruleName}」里的「${humanizeMatchField(field)}」条件。`,
-    ruleLabel: ruleName,
+    detail: index >= 0
+      ? `命中了「${bindingLabel}」的「${ruleLabel}」优先级（bindings[${index}]）。`
+      : `命中优先级：${ruleLabel}。`,
+    ruleLabel: bindingLabel,
   };
 }
 
 export default function Agents() {
+  const { uiMode } = (useOutletContext() as { uiMode?: 'modern' }) || {};
+  const modern = uiMode === 'modern';
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
@@ -1182,8 +1372,11 @@ export default function Agents() {
   const [defaultModelHint, setDefaultModelHint] = useState('');
   const [agentDefaults, setAgentDefaults] = useState<AgentDefaultsState>(EMPTY_AGENT_DEFAULTS);
   const [skills, setSkills] = useState<SkillEntry[]>([]);
+  const [skillsContext, setSkillsContext] = useState<AgentSkillsContext>({ agentId: '', workspace: '' });
+  const [skillsLoading, setSkillsLoading] = useState(false);
   const [cronJobs, setCronJobs] = useState<CronJob[]>([]);
   const [coreFilesByAgent, setCoreFilesByAgent] = useState<Record<string, AgentCoreFileEntry[]>>({});
+  const [coreFilesStateByAgent, setCoreFilesStateByAgent] = useState<Record<string, CoreFilesLoadState>>({});
   const [coreFilesLoading, setCoreFilesLoading] = useState(false);
   const [selectedCoreFileName, setSelectedCoreFileName] = useState('AGENTS.md');
   const [coreFileDraft, setCoreFileDraft] = useState('');
@@ -1273,7 +1466,7 @@ export default function Agents() {
     if (!selectedAgent) return [];
     return bindings
       .map((binding, index) => ({ binding, index }))
-      .filter(item => item.binding.agent === selectedAgent.id);
+      .filter(item => item.binding.agentId === selectedAgent.id);
   }, [bindings, selectedAgent]);
   const selectedAgentCoreFiles = useMemo(() => {
     if (!selectedAgent) return [];
@@ -1283,20 +1476,27 @@ export default function Agents() {
     if (selectedAgentCoreFiles.length === 0) return null;
     return selectedAgentCoreFiles.find(file => file.name === selectedCoreFileName) || selectedAgentCoreFiles[0];
   }, [selectedAgentCoreFiles, selectedCoreFileName]);
+  const selectedCoreFilesState = useMemo(() => {
+    if (!selectedAgent) return undefined;
+    return coreFilesStateByAgent[selectedAgent.id];
+  }, [coreFilesStateByAgent, selectedAgent]);
+  const selectedHeartbeatFile = useMemo(() => {
+    return selectedAgentCoreFiles.find(file => file.name === 'HEARTBEAT.md') || null;
+  }, [selectedAgentCoreFiles]);
   const coreFileDirty = useMemo(() => {
     if (!selectedCoreFile) return coreFileDraft.trim().length > 0;
     return coreFileDraft !== (selectedCoreFile.content || '');
   }, [coreFileDraft, selectedCoreFile]);
   const selectedAgentCronJobs = useMemo(() => {
     if (!selectedAgent) return [];
-    return cronJobs.filter(job => String(job.sessionTarget || '').trim() === selectedAgent.id);
-  }, [cronJobs, selectedAgent]);
+    return cronJobs.filter(job => resolveCronJobAgentID(job, defaultAgent || 'main') === selectedAgent.id);
+  }, [cronJobs, defaultAgent, selectedAgent]);
   const selectedAgentSessions = useMemo(() => {
     if (!selectedAgent) return [];
     return sessionsByAgent[selectedAgent.id] || [];
   }, [sessionsByAgent, selectedAgent]);
   const routingStats = useMemo(() => {
-    const activeAgents = new Set(bindings.map(item => item.agent).filter(Boolean));
+    const activeAgents = new Set(bindings.map(item => item.agentId).filter(Boolean));
     const activeChannels = new Set(
       bindings
         .map(item => extractTextValue(compactMatch(item.match).channel))
@@ -1310,6 +1510,27 @@ export default function Agents() {
     };
   }, [bindings]);
   const enabledSkills = useMemo(() => skills.filter(skill => skill.enabled), [skills]);
+  const selectedSkillSourceSummary = useMemo(() => {
+    const counts = {
+      workspace: 0,
+      shared: 0,
+      bundled: 0,
+      plugin: 0,
+      extra: 0,
+      other: 0,
+    };
+    skills.forEach(skill => {
+      counts[summarizeSkillSourceGroup(skill.source)] += 1;
+    });
+    return [
+      { key: 'workspace', label: '当前 Agent workspace', count: counts.workspace },
+      { key: 'shared', label: '共享 skills', count: counts.shared },
+      { key: 'bundled', label: 'bundled', count: counts.bundled },
+      { key: 'plugin', label: 'plugin skills', count: counts.plugin },
+      { key: 'extra', label: 'extraDirs', count: counts.extra },
+      { key: 'other', label: '其他来源', count: counts.other },
+    ].filter(item => item.count > 0);
+  }, [skills]);
   const selectedAgentChannelSnapshot = useMemo(() => {
     const routeCountByChannel = new Map<string, number>();
     selectedAgentBindings.forEach(({ binding }) => {
@@ -1333,16 +1554,28 @@ export default function Agents() {
       .sort((a, b) => {
         if (a.routeCount !== b.routeCount) return b.routeCount - a.routeCount;
         return a.id.localeCompare(b.id);
-      });
+      })
+      .filter(channel => channel.routeCount > 0);
   }, [channelConfigs, channelMeta, selectedAgentBindings]);
+  const selectedAgentIsDefault = selectedAgent?.id === defaultAgent;
   const previewExplanation = useMemo(() => buildPreviewExplanation(previewResult, bindings, defaultAgent), [previewResult, bindings, defaultAgent]);
   const effectiveIsDefault = firstExplicitAgentWillBecomeDefault ? true : form.isDefault;
+  const selectedAvatarPreview = useMemo(() => {
+    const avatar = extractIdentityDraft(selectedAgent?.identity).avatar;
+    return resolveAvatarPreviewSrc(selectedAgent?.id, avatar);
+  }, [selectedAgent]);
+  const formAvatarValidationError = useMemo(() => validateAvatarValue(form.identityAvatar), [form.identityAvatar]);
+  const formAvatarPreview = useMemo(() => {
+    const agentId = (editingId || form.id || '').trim();
+    return resolveAvatarPreviewSrc(agentId || undefined, form.identityAvatar);
+  }, [editingId, form.id, form.identityAvatar]);
   const saveBlockedReason = useMemo(() => {
     if (agentIDError) return agentIDError;
     if (workspaceConflict) return `workspace 已被 Agent “${workspaceConflict.id}” 使用`;
     if (agentDirConflict) return `agentDir 已被 Agent “${agentDirConflict.id}” 使用`;
+    if (formAvatarValidationError) return formAvatarValidationError;
     return '';
-  }, [agentDirConflict, agentIDError, workspaceConflict]);
+  }, [agentDirConflict, agentIDError, workspaceConflict, formAvatarValidationError]);
   const showAgentIDError = saveAttempted || !isBlankAgentID;
   const footerValidationMessage = useMemo(() => {
     if (!saveBlockedReason) return '保存会继续沿用现有后端接口与 payload 格式；bindings 与路由预览不会受到影响。';
@@ -1350,6 +1583,14 @@ export default function Agents() {
     return saveBlockedReason;
   }, [isBlankAgentID, saveAttempted, saveBlockedReason]);
   const footerValidationIsError = !!saveBlockedReason && !(isBlankAgentID && !saveAttempted);
+  const pageClass = modern ? 'page-modern' : '';
+  const panelClass = modern ? 'page-modern-panel' : 'bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700/50 shadow-sm';
+  const softPanelClass = modern ? 'page-modern-panel p-4 bg-white/70 dark:bg-slate-900/70' : 'rounded-xl border border-gray-100 dark:border-gray-700 p-4';
+  const panelMutedClass = modern ? 'rounded-xl border border-sky-200/60 bg-sky-500/10 dark:border-sky-800/60 dark:bg-sky-500/10' : 'rounded-xl border border-sky-100 bg-sky-50 dark:border-sky-900/40 dark:bg-sky-950/20';
+  const controlButtonClass = modern ? 'page-modern-control px-3 py-2 text-xs font-medium' : 'flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 transition-colors shadow-sm';
+  const accentButtonClass = modern ? 'page-modern-accent px-4 py-2 text-xs font-medium disabled:opacity-50' : 'flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 shadow-sm shadow-violet-200 dark:shadow-none transition-all disabled:opacity-50';
+  const actionButtonClass = modern ? 'page-modern-action px-3 py-2 text-xs font-medium' : 'px-3 py-2 text-xs font-medium rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600';
+  const dangerButtonClass = modern ? 'page-modern-danger px-3 py-2 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed' : 'px-3 py-2 text-xs font-medium rounded-lg bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed';
 
   const touchStructured = (key: keyof AgentStructuredTouchedState) => {
     setStructuredTouched(prev => (prev[key] ? prev : { ...prev, [key]: true }));
@@ -1389,14 +1630,15 @@ export default function Agents() {
     setStructuredTouched(DEFAULT_AGENT_STRUCTURED_TOUCHED);
   };
 
+  const skillsLoadSeqRef = useRef(0);
+
   const loadData = async () => {
     setLoading(true);
     try {
-      const [agentsRes, channelsRes, modelsRes, skillsRes, cronRes] = await Promise.all([
+      const [agentsRes, channelsRes, modelsRes, cronRes] = await Promise.all([
         api.getAgentsConfig(),
         api.getChannels(),
         api.getModels(),
-        api.getSkills(),
         api.getCronJobs(),
       ]);
       let nextDefaultModelHint = '';
@@ -1457,12 +1699,6 @@ export default function Agents() {
         setModelOptions([]);
       }
 
-      if (skillsRes?.ok) {
-        setSkills(skillsRes.skills || []);
-      } else {
-        setSkills([]);
-      }
-
       if (cronRes?.ok) {
         setCronJobs(cronRes.jobs || []);
       } else {
@@ -1478,7 +1714,9 @@ export default function Agents() {
       setModelOptions([]);
       setDefaultModelHint('');
       setSkills([]);
+      setSkillsContext({ agentId: '', workspace: '' });
       setCronJobs([]);
+      setCoreFilesStateByAgent({});
     } finally {
       setLoading(false);
     }
@@ -1492,11 +1730,26 @@ export default function Agents() {
       const response = await api.getAgentCoreFiles(agentId);
       if (response?.ok) {
         setCoreFilesByAgent(prev => ({ ...prev, [agentId]: response.files || [] }));
+        setCoreFilesStateByAgent(prev => ({
+          ...prev,
+          [agentId]: {
+            kind: 'ready',
+            workspace: String(response.workspace || '').trim() || undefined,
+          },
+        }));
       } else if (response?.error) {
+        setCoreFilesStateByAgent(prev => ({
+          ...prev,
+          [agentId]: classifyCoreFilesLoadState(String(response.error || ''), String(response.workspace || '').trim() || undefined),
+        }));
         setMsg(`加载核心文件失败: ${response.error}`);
         setTimeout(() => setMsg(''), 4000);
       }
     } catch (err) {
+      setCoreFilesStateByAgent(prev => ({
+        ...prev,
+        [agentId]: classifyCoreFilesLoadState(String(err)),
+      }));
       setMsg(`加载核心文件失败: ${String(err)}`);
       setTimeout(() => setMsg(''), 4000);
     } finally {
@@ -1552,6 +1805,42 @@ export default function Agents() {
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    if (!selectedAgent?.id) {
+      setSkills([]);
+      setSkillsContext({ agentId: '', workspace: '' });
+      setSkillsLoading(false);
+      return;
+    }
+    const seq = ++skillsLoadSeqRef.current;
+    const agentID = selectedAgent.id;
+    setSkillsLoading(true);
+    setSkills([]);
+    setSkillsContext({ agentId: agentID, workspace: String(selectedAgent.workspace || '').trim() });
+    api.getSkills(agentID)
+      .then(res => {
+        if (seq !== skillsLoadSeqRef.current) return;
+        if (res?.ok) {
+          setSkills((res.skills || []) as SkillEntry[]);
+          setSkillsContext({
+            agentId: String(res.agentId || agentID).trim() || agentID,
+            workspace: String(res.workspace || selectedAgent.workspace || '').trim(),
+          });
+          return;
+        }
+        setSkills([]);
+        setSkillsContext({ agentId: agentID, workspace: String(selectedAgent.workspace || '').trim() });
+      })
+      .catch(() => {
+        if (seq !== skillsLoadSeqRef.current) return;
+        setSkills([]);
+        setSkillsContext({ agentId: agentID, workspace: String(selectedAgent.workspace || '').trim() });
+      })
+      .finally(() => {
+        if (seq === skillsLoadSeqRef.current) setSkillsLoading(false);
+      });
+  }, [selectedAgent]);
 
   useEffect(() => {
     const fallback = agents.find(agent => agent.id === defaultAgent)?.id || agents[0]?.id || '';
@@ -1703,10 +1992,7 @@ export default function Agents() {
         toolDeny: isPlainObject(toolsObj) ? parseStringList(getNestedValue(toolsObj, 'deny')).join(', ') : '',
         agentToAgentMode: triStateFromValue(isPlainObject(toolsObj) ? getNestedValue(toolsObj, 'agentToAgent.enabled') : undefined),
         agentToAgentAllow: isPlainObject(toolsObj) ? parseStringList(getNestedValue(toolsObj, 'agentToAgent.allow')).join(', ') : '',
-        sessionVisibility: (() => {
-          const raw = isPlainObject(toolsObj) ? getNestedValue(toolsObj, 'sessions.visibility') : '';
-          return raw === 'same-agent' || raw === 'all-agents' ? raw : '';
-        })(),
+        sessionVisibility: normalizeSessionVisibility(isPlainObject(toolsObj) ? getNestedValue(toolsObj, 'sessions.visibility') : ''),
         subagentAllowAgents: isPlainObject(subagentsObj) ? parseStringList(getNestedValue(subagentsObj, 'allowAgents')).join(', ') : '',
       }));
       setSandboxClearIntent(false);
@@ -1800,6 +2086,8 @@ export default function Agents() {
         const nextIdentity = isPlainObject(identityObj) ? deepClone(identityObj) : {};
         delete nextIdentity.description;
         delete nextIdentity.tone;
+        delete nextIdentity.vibe;
+        delete nextIdentity.creature;
         if (form.identityName.trim()) nextIdentity.name = form.identityName.trim();
         else delete nextIdentity.name;
         if (form.identityTheme.trim()) nextIdentity.theme = form.identityTheme.trim();
@@ -2029,21 +2317,19 @@ export default function Agents() {
   };
 
   const setPeerField = (idx: number, key: 'peer' | 'parentPeer', part: 'kind' | 'id', value: string) => {
-    touchBindingMatch(idx, cur => {
+    setBindingAt(idx, row => {
+      const cur = deepClone(row.match || {});
       const now = extractPeerForm(cur, key);
       const kind = part === 'kind' ? value.trim() : now.kind;
       const id = part === 'id' ? value.trim() : now.id;
       if (!kind && !id) {
         delete cur[key];
-        return cur;
+        const nextMatch = compactMatch(cur);
+        return { ...row, match: nextMatch, matchText: JSON.stringify(nextMatch, null, 2), rowError: '' };
       }
-      if (!kind) {
-        // 结构化模式下 peer 必须有 kind，避免生成歧义字符串。
-        delete cur[key];
-        return cur;
-      }
-      cur[key] = id ? { kind, id } : { kind };
-      return cur;
+      cur[key] = { kind, id };
+      const nextMatch = compactMatch(cur);
+      return { ...row, match: nextMatch, matchText: JSON.stringify(nextMatch, null, 2), rowError: '' };
     });
   };
 
@@ -2091,8 +2377,8 @@ export default function Agents() {
 
     for (let i = 0; i < nextBindings.length; i++) {
       const row = nextBindings[i];
-      if (!row.agent.trim()) {
-        setMsg(`第 ${i + 1} 条 binding 缺少 agent`);
+      if (!row.agentId.trim()) {
+        setMsg(`第 ${i + 1} 条 binding 缺少 agentId`);
         return;
       }
 
@@ -2141,12 +2427,32 @@ export default function Agents() {
         return;
       }
 
-      parsed.push({
-        name: row.name.trim() || undefined,
-        agentId: row.agent.trim(),
-        enabled: row.enabled,
+      const acpMode = row.acp.mode.trim();
+      if (row.type === 'acp' && acpMode && !['persistent', 'oneshot'].includes(acpMode)) {
+        const error = `第 ${i + 1} 条 binding 的 acp.mode 仅支持 persistent / oneshot`;
+        nextBindings[i] = { ...row, rowError: error };
+        setBindings(nextBindings);
+        setMsg(error);
+        return;
+      }
+
+      const payload: any = {
+        agentId: row.agentId.trim(),
+        comment: row.comment.trim() || undefined,
         match: matchObj,
-      });
+      };
+      if (row.enabled === false) payload.enabled = false;
+      if (row.type === 'acp') {
+        payload.type = 'acp';
+        const acp = cleanupObject({
+          mode: row.acp.mode.trim() || undefined,
+          label: row.acp.label.trim() || undefined,
+          cwd: row.acp.cwd.trim() || undefined,
+          backend: row.acp.backend.trim() || undefined,
+        });
+        if (acp) payload.acp = acp;
+      }
+      parsed.push(payload);
     }
 
     setBindings(nextBindings);
@@ -2174,10 +2480,12 @@ export default function Agents() {
     setBindings(prev => [
       ...prev,
       {
-        name: '',
-        agent: defaultAgent || agentOptions[0] || 'main',
+        type: 'route',
+        agentId: defaultAgent || agentOptions[0] || 'main',
+        comment: '',
         enabled: true,
         match,
+        acp: { mode: '', label: '', cwd: '', backend: '' },
         matchText: JSON.stringify(match, null, 2),
         mode: 'structured',
         rowError: '',
@@ -2213,6 +2521,57 @@ export default function Agents() {
     });
   };
 
+  const importIdentityFromCoreFile = async () => {
+    const agentId = (editingId || form.id || '').trim();
+    if (!agentId) {
+      setMsg('请先填写 Agent ID，或在已有 Agent 上使用该导入功能。');
+      setTimeout(() => setMsg(''), 4000);
+      return;
+    }
+    try {
+      let files = coreFilesByAgent[agentId];
+      if (!files) {
+        const response = await api.getAgentCoreFiles(agentId);
+        if (!response?.ok) {
+          const error = String(response?.error || '无法读取 IDENTITY.md');
+          setCoreFilesStateByAgent(prev => ({ ...prev, [agentId]: classifyCoreFilesLoadState(error, String(response?.workspace || '').trim() || undefined) }));
+          setMsg(`导入失败: ${error}`);
+          setTimeout(() => setMsg(''), 4000);
+          return;
+        }
+        files = response.files || [];
+        setCoreFilesByAgent(prev => ({ ...prev, [agentId]: files || [] }));
+        setCoreFilesStateByAgent(prev => ({
+          ...prev,
+          [agentId]: { kind: 'ready', workspace: String(response.workspace || '').trim() || undefined },
+        }));
+      }
+      const identityFile = (files || []).find((file: AgentCoreFileEntry) => file.name === 'IDENTITY.md');
+      if (!identityFile?.content?.trim()) {
+        setMsg('未找到可导入的 IDENTITY.md 内容。');
+        setTimeout(() => setMsg(''), 4000);
+        return;
+      }
+      const parsed = parseIdentityMarkdown(identityFile.content);
+      if (!parsed.name && !parsed.theme && !parsed.creature && !parsed.vibe && !parsed.emoji && !parsed.avatar) {
+        setMsg('IDENTITY.md 中未解析出 Name / Theme / Creature / Vibe / Emoji / Avatar。');
+        setTimeout(() => setMsg(''), 4000);
+        return;
+      }
+      updateForm({
+        identityName: parsed.name || form.identityName,
+        identityTheme: parsed.theme || parsed.creature || parsed.vibe || form.identityTheme,
+        identityEmoji: parsed.emoji || form.identityEmoji,
+        identityAvatar: parsed.avatar || form.identityAvatar,
+      }, 'identity');
+      setMsg('已从 IDENTITY.md 导入可识别字段');
+      setTimeout(() => setMsg(''), 3000);
+    } catch (err) {
+      setMsg('导入失败: ' + String(err));
+      setTimeout(() => setMsg(''), 4000);
+    }
+  };
+
   const runPreview = async () => {
     const meta = buildPreviewMetaPayload(previewMeta, channelMeta);
 
@@ -2246,7 +2605,7 @@ export default function Agents() {
 
   if (loading) {
     return (
-      <div className="py-16 text-center text-gray-400 text-sm">
+      <div className={`py-16 text-center text-gray-400 text-sm ${pageClass}`}>
         <RefreshCw size={18} className="animate-spin inline mr-2" />
         加载中...
       </div>
@@ -2254,7 +2613,7 @@ export default function Agents() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className={`space-y-6 ${pageClass}`}>
       <datalist id="agent-channel-options">
         {channelOptions.map(ch => (
           <option key={ch} value={ch} />
@@ -2266,16 +2625,16 @@ export default function Agents() {
         ))}
       </datalist>
 
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+      <div className={modern ? 'page-modern-header' : 'flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between'}>
         <div>
-          <h2 className="text-xl font-bold text-gray-900 dark:text-white">智能体（Agents）</h2>
-          <p className="text-sm text-gray-500 mt-1">在这里维护智能体配置、查看核心文件，并快速检查一条消息最终会交给谁处理。</p>
+          <h2 className={modern ? 'page-modern-title text-xl' : 'text-xl font-bold text-gray-900 dark:text-white'}>智能体（Agents）</h2>
+          <p className={modern ? 'page-modern-subtitle text-sm mt-1' : 'text-sm text-gray-500 mt-1'}>在这里维护智能体配置、查看核心文件，并快速检查一条消息最终会交给谁处理。</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button onClick={loadData} className="flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 transition-colors shadow-sm">
+          <button onClick={loadData} className={controlButtonClass}>
             <RefreshCw size={14} /> 刷新（Refresh）
           </button>
-          <button onClick={() => openCreate('basic')} className="flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 shadow-sm shadow-violet-200 dark:shadow-none transition-all">
+          <button onClick={() => openCreate('basic')} className={accentButtonClass}>
             <Plus size={14} /> 新建智能体（New Agent）
           </button>
         </div>
@@ -2287,10 +2646,10 @@ export default function Agents() {
         </div>
       )}
 
-      <div className="rounded-xl border border-violet-100 dark:border-violet-900/40 bg-violet-50/80 dark:bg-violet-950/20 p-4">
+      <div className={`${modern ? 'page-modern-panel p-4' : 'rounded-xl border border-violet-100 dark:border-violet-900/40 bg-violet-50/80 dark:bg-violet-950/20 p-4'}`}>
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <p className="text-xs font-semibold tracking-wide text-violet-700 dark:text-violet-300 uppercase">使用方式（How it works）</p>
+            <p className={`text-xs font-semibold tracking-wide uppercase ${modern ? 'text-sky-700 dark:text-sky-300' : 'text-violet-700 dark:text-violet-300'}`}>使用方式（How it works）</p>
             <h3 className="text-base font-semibold text-gray-900 dark:text-white mt-1">先管理单个智能体，再检查路由命中</h3>
             <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">
               “Agent 目录”适合查看单个智能体的配置、文件与上下文；“路由工作台”适合检查规则、模拟消息并确认最终分流结果。
@@ -2301,8 +2660,8 @@ export default function Agents() {
               onClick={() => setWorkbenchView('directory')}
               className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
                 workbenchView === 'directory'
-                  ? 'border-violet-600 bg-violet-600 text-white'
-                  : 'border-white/80 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 hover:border-violet-300'
+                  ? (modern ? 'border-sky-500 bg-sky-500 text-white shadow-lg shadow-sky-500/20' : 'border-violet-600 bg-violet-600 text-white')
+                  : (modern ? 'border-sky-100/70 dark:border-slate-700 bg-white/80 dark:bg-slate-900/70 text-slate-600 dark:text-slate-300 hover:border-sky-300' : 'border-white/80 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 hover:border-violet-300')
               }`}
             >
               <Bot size={14} />
@@ -2312,8 +2671,8 @@ export default function Agents() {
               onClick={() => setWorkbenchView('routing')}
               className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
                 workbenchView === 'routing'
-                  ? 'border-violet-600 bg-violet-600 text-white'
-                  : 'border-white/80 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 hover:border-violet-300'
+                  ? (modern ? 'border-sky-500 bg-sky-500 text-white shadow-lg shadow-sky-500/20' : 'border-violet-600 bg-violet-600 text-white')
+                  : (modern ? 'border-sky-100/70 dark:border-slate-700 bg-white/80 dark:bg-slate-900/70 text-slate-600 dark:text-slate-300 hover:border-sky-300' : 'border-white/80 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 hover:border-violet-300')
               }`}
             >
               <Route size={14} />
@@ -2325,7 +2684,7 @@ export default function Agents() {
 
       {workbenchView === 'directory' ? (
         <div className="grid grid-cols-1 xl:grid-cols-[320px,1fr] gap-6">
-          <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700/50 shadow-sm">
+          <div className={panelClass}>
             <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700/50 flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
@@ -2348,14 +2707,14 @@ export default function Agents() {
                   const identity = isPlainObject(agent.identity) ? agent.identity : {};
                   const modelDraft = extractModelDraft(agent.model);
                   const cardTitle = String(agent.name || identity.name || '').trim() || agent.id;
-                  const routeCount = bindings.filter(item => item.agent === agent.id).length;
+                  const routeCount = bindings.filter(item => item.agentId === agent.id).length;
                   return (
                     <div
                       key={agent.id}
                       className={`rounded-xl border p-3 transition-colors ${
                         active
-                          ? 'border-violet-300 bg-violet-50/80 dark:bg-violet-950/20 dark:border-violet-800/60'
-                          : 'border-gray-100 dark:border-gray-700 hover:border-violet-200 dark:hover:border-violet-800/60'
+                          ? (modern ? 'border-sky-300 bg-sky-50/90 dark:bg-sky-950/20 dark:border-sky-800/60 shadow-sm' : 'border-violet-300 bg-violet-50/80 dark:bg-violet-950/20 dark:border-violet-800/60')
+                          : (modern ? 'border-slate-200/70 dark:border-slate-700/80 bg-white/60 dark:bg-slate-900/40 hover:border-sky-200 dark:hover:border-sky-800/60' : 'border-gray-100 dark:border-gray-700 hover:border-violet-200 dark:hover:border-violet-800/60')
                       }`}
                     >
                       <button
@@ -2370,7 +2729,7 @@ export default function Agents() {
                           <div>
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="font-medium text-sm text-gray-900 dark:text-white">{cardTitle}</span>
-                              {agent.default && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-200">默认</span>}
+                              {agent.default && <span className={`text-[10px] px-1.5 py-0.5 rounded ${modern ? 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-200' : 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-200'}`}>默认</span>}
                               {implicitAgent && <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-200">占位</span>}
                             </div>
                             <div className="mt-1 font-mono text-[11px] text-gray-500">{agent.id}</div>
@@ -2393,14 +2752,14 @@ export default function Agents() {
                         </div>
                       </button>
                       <div className="mt-3 flex items-center gap-2">
-                        <button onClick={() => openEdit(agent)} className="px-2.5 py-1.5 text-xs rounded bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600">
+                        <button onClick={() => openEdit(agent)} className={actionButtonClass}>
                            {implicitAgent ? '配置（Materialize）' : '编辑（Edit）'}
                         </button>
                         <button
                           disabled={implicitAgent}
                           title={implicitAgent ? '运行时占位 Agent 无需删除' : ''}
                           onClick={() => deleteAgent(agent)}
-                          className="px-2.5 py-1.5 text-xs rounded bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                          className={dangerButtonClass}
                         >
                            删除（Delete）
                         </button>
@@ -2415,13 +2774,13 @@ export default function Agents() {
           <div className="space-y-4">
             {selectedAgent ? (
               <>
-                <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700/50 shadow-sm p-5">
+                <div className={`${panelClass} p-5`}>
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                     <div className="space-y-3">
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
                           <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{String(selectedAgent.name || selectedIdentity.name || '').trim() || selectedAgent.id}</h3>
-                          {selectedAgent.default && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-200">默认 Agent</span>}
+                            {selectedAgent.default && <span className={`text-[10px] px-1.5 py-0.5 rounded ${modern ? 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-200' : 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-200'}`}>默认 Agent</span>}
                           {isImplicitAgent(selectedAgent) && <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-200">运行时占位</span>}
                         </div>
                         <p className="mt-1 text-sm text-gray-500">
@@ -2438,7 +2797,7 @@ export default function Agents() {
                         <div className="rounded-xl border border-gray-100 dark:border-gray-700 px-3 py-3 bg-gray-50/80 dark:bg-gray-900">
                           <div className="text-gray-400">工具与权限（Tools & Access）</div>
                           <div className="mt-1 font-medium text-gray-900 dark:text-white">{describeSandboxMode(selectedAgent.sandbox)}</div>
-                          <div className="mt-1 text-gray-500">{describeSessionVisibility((getNestedValue(selectedTools, 'sessions.visibility') as '' | 'same-agent' | 'all-agents') || '')}</div>
+                          <div className="mt-1 text-gray-500">{describeSessionVisibility(getNestedValue(selectedTools, 'sessions.visibility'))}</div>
                         </div>
                         <div className="rounded-xl border border-gray-100 dark:border-gray-700 px-3 py-3 bg-gray-50/80 dark:bg-gray-900">
                           <div className="text-gray-400">路由上下文（Routing Context）</div>
@@ -2448,17 +2807,17 @@ export default function Agents() {
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <button onClick={() => openEdit(selectedAgent)} className="px-3 py-2 text-xs font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700">
+                      <button onClick={() => openEdit(selectedAgent)} className={accentButtonClass}>
                         编辑当前智能体（Edit Agent）
                       </button>
-                      <button onClick={() => setWorkbenchView('routing')} className="px-3 py-2 text-xs font-medium rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
+                      <button onClick={() => setWorkbenchView('routing')} className={actionButtonClass}>
                         查看路由工作台（Open Routing Studio）
                       </button>
                     </div>
                   </div>
                 </div>
 
-                <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700/50 shadow-sm">
+                <div className={panelClass}>
                   <div className="px-4 py-4 border-b border-gray-100 dark:border-gray-700/50">
                     <div className="flex flex-wrap gap-2">
                       {AGENT_DIRECTORY_TABS.map(tab => (
@@ -2467,12 +2826,12 @@ export default function Agents() {
                           onClick={() => setDetailTab(tab.id)}
                           className={`px-3 py-2 rounded-lg text-xs border transition-colors ${
                             detailTab === tab.id
-                              ? 'bg-violet-600 text-white border-violet-600'
-                              : 'bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-violet-300'
+                              ? (modern ? 'bg-sky-500 text-white border-sky-500 shadow-sm shadow-sky-500/20' : 'bg-violet-600 text-white border-violet-600')
+                              : (modern ? 'bg-white/80 dark:bg-slate-900/70 text-slate-600 dark:text-slate-300 border-slate-200/80 dark:border-slate-700 hover:border-sky-300' : 'bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-violet-300')
                           }`}
                         >
                           <div className="font-medium">{tab.title}</div>
-                          <div className={`mt-0.5 ${detailTab === tab.id ? 'text-violet-100' : 'text-gray-400'}`}>{tab.description}</div>
+                          <div className={`mt-0.5 ${detailTab === tab.id ? (modern ? 'text-sky-100' : 'text-violet-100') : 'text-gray-400'}`}>{tab.description}</div>
                         </button>
                       ))}
                     </div>
@@ -2507,10 +2866,10 @@ export default function Agents() {
                             <div className="mt-3 space-y-2 text-sm text-gray-600 dark:text-gray-300">
                               <div>Sandbox：<span className="font-medium text-gray-900 dark:text-white">{describeSandboxMode(selectedAgent.sandbox)}</span></div>
                               <div>Agent 协作：{describeTriState(triStateFromValue(getNestedValue(selectedTools, 'agentToAgent.enabled')), '允许委派', '禁用委派')}</div>
-                              <div>会话可见性：{describeSessionVisibility((getNestedValue(selectedTools, 'sessions.visibility') as '' | 'same-agent' | 'all-agents') || '')}</div>
+                              <div>会话可见性：{describeSessionVisibility(getNestedValue(selectedTools, 'sessions.visibility'))}</div>
                               <div>群聊模式：{describeTriState(triStateFromValue(getNestedValue(selectedGroupChat, 'enabled')), '显式启用', '显式关闭')}</div>
                             </div>
-                            <button onClick={() => openEdit(selectedAgent, 'access')} className="mt-4 px-3 py-2 text-xs rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600">
+                            <button onClick={() => openEdit(selectedAgent, 'access')} className={`mt-4 ${actionButtonClass}`}>
                               编辑工具与权限（Edit Tools & Access）
                             </button>
                           </div>
@@ -2588,7 +2947,7 @@ export default function Agents() {
                               </div>
                             </div>
                           </div>
-                          <button onClick={() => openEdit(selectedAgent, 'behavior')} className="px-3 py-2 text-xs rounded-lg bg-violet-600 text-white hover:bg-violet-700">
+                          <button onClick={() => openEdit(selectedAgent, 'behavior')} className={accentButtonClass}>
                             编辑模型参数（Edit Model Settings）
                           </button>
                         </div>
@@ -2598,6 +2957,19 @@ export default function Agents() {
                             <p className="text-xs text-gray-500 mt-1">业务方通常先理解“这个 Agent 是谁、以什么口吻工作”。</p>
                           </div>
                             <div className="space-y-3 text-sm">
+                              <div className="rounded-lg bg-gray-50 dark:bg-gray-900 px-3 py-3">
+                                <div className="text-xs text-gray-400">头像预览（Avatar Preview）</div>
+                                {selectedAvatarPreview ? (
+                                  <div className="mt-2 flex items-center gap-3">
+                                    <img src={selectedAvatarPreview} alt={`${selectedIdentity.name || selectedAgent.id} avatar`} className="h-14 w-14 rounded-2xl object-cover border border-white/60 dark:border-slate-700 bg-white dark:bg-slate-950" />
+                                    <div className="text-xs text-gray-500">
+                                      {/^data:/i.test(selectedIdentity.avatar || '') ? '直接渲染 data URI' : /^https?:\/\//i.test(selectedIdentity.avatar || '') ? '直接渲染远程 URL' : '通过本地 avatar 预览接口加载'}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="mt-2 text-xs text-gray-500">当前没有可用的头像预览。</div>
+                                )}
+                              </div>
                               <div className="rounded-lg bg-gray-50 dark:bg-gray-900 px-3 py-3">
                                 <div className="text-xs text-gray-400">显示名称（Name）</div>
                                 <div className="mt-1 text-gray-900 dark:text-white">{selectedIdentity.name || '未设置'}</div>
@@ -2615,7 +2987,7 @@ export default function Agents() {
                                 <div className="mt-1 text-gray-700 dark:text-gray-200 break-all">{selectedIdentity.avatar || '未设置'}</div>
                               </div>
                             </div>
-                          <button onClick={() => openEdit(selectedAgent, 'behavior')} className="px-3 py-2 text-xs rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600">
+                          <button onClick={() => openEdit(selectedAgent, 'behavior')} className={actionButtonClass}>
                               编辑身份摘要（Edit Identity）
                             </button>
                           </div>
@@ -2637,7 +3009,7 @@ export default function Agents() {
                             </div>
                             <div className="rounded-lg bg-gray-50 dark:bg-gray-900 px-3 py-3">
                               <div className="text-xs text-gray-400">会话可见范围（Session Visibility）</div>
-                              <div className="mt-1 text-gray-900 dark:text-white">{describeSessionVisibility((getNestedValue(selectedTools, 'sessions.visibility') as '' | 'same-agent' | 'all-agents') || '')}</div>
+                              <div className="mt-1 text-gray-900 dark:text-white">{describeSessionVisibility(getNestedValue(selectedTools, 'sessions.visibility'))}</div>
                             </div>
                             <div className="rounded-lg bg-gray-50 dark:bg-gray-900 px-3 py-3">
                               <div className="text-xs text-gray-400">群聊模式（Group Chat）</div>
@@ -2698,7 +3070,7 @@ export default function Agents() {
                               </div>
                             </div>
                           )}
-                          <button onClick={() => openEdit(selectedAgent, 'access')} className="px-3 py-2 text-xs rounded-lg bg-violet-600 text-white hover:bg-violet-700">
+                          <button onClick={() => openEdit(selectedAgent, 'access')} className={accentButtonClass}>
                             编辑工具与权限（Edit Tools & Access）
                           </button>
                         </div>
@@ -2707,11 +3079,11 @@ export default function Agents() {
 
                     {detailTab === 'files' && (
                       <div className="space-y-4">
-                        <div className="rounded-xl border border-violet-100 bg-violet-50 px-4 py-3 text-sm text-violet-700 dark:border-violet-900/40 dark:bg-violet-950/20 dark:text-violet-200">
+                        <div className={`${modern ? 'rounded-xl border border-sky-200/70 bg-sky-500/10 px-4 py-3 text-sm text-sky-700 dark:border-sky-800/50 dark:text-sky-200' : 'rounded-xl border border-violet-100 bg-violet-50 px-4 py-3 text-sm text-violet-700 dark:border-violet-900/40 dark:bg-violet-950/20 dark:text-violet-200'}`}>
                           对标官方 <span className="font-mono">Files</span> 面板：这里直接查看并编辑当前 Agent 工作区中的核心文件，避免人格、工具说明与长期记忆继续埋在大段 JSON 里。
                         </div>
                         <div className="grid grid-cols-1 xl:grid-cols-[300px,1fr] gap-4">
-                          <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 space-y-3">
+                          <div className={softPanelClass}>
                             <div className="flex items-start justify-between gap-3">
                               <div>
                                 <h4 className="text-sm font-semibold text-gray-900 dark:text-white">核心文件列表（Core Files）</h4>
@@ -2722,7 +3094,7 @@ export default function Agents() {
                                   if (!confirmDiscardCoreFileDraft('并刷新核心文件列表')) return;
                                   loadAgentCoreFiles(selectedAgent.id, true);
                                 }}
-                                className="px-3 py-2 text-xs rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600"
+                                className={actionButtonClass}
                               >
                                 刷新（Refresh）
                               </button>
@@ -2732,9 +3104,21 @@ export default function Agents() {
                                 <RefreshCw size={16} className="animate-spin inline mr-2" />
                                 正在读取工作区文件...
                               </div>
+                            ) : selectedCoreFilesState?.kind === 'restricted' ? (
+                              <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-6 text-sm text-amber-700 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-200">
+                                <div className="font-medium">工作区已配置，但当前策略不允许读取核心文件。</div>
+                                <div className="mt-2 text-xs leading-relaxed">{selectedCoreFilesState.message || '当前 agent workspace 不在受管工作区内，或命中了安全限制。'}</div>
+                              </div>
+                            ) : selectedCoreFilesState?.kind === 'error' ? (
+                              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-6 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-950/20 dark:text-red-200">
+                                <div className="font-medium">读取核心文件失败</div>
+                                <div className="mt-2 text-xs leading-relaxed">{selectedCoreFilesState.message || '请稍后重试。'}</div>
+                              </div>
                             ) : selectedAgentCoreFiles.length === 0 ? (
                               <div className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 px-4 py-8 text-center text-sm text-gray-400">
-                                当前 Agent 还没有可读取的核心文件；请先确认 workspace 已配置。
+                                {selectedCoreFilesState?.kind === 'missing'
+                                  ? '当前 Agent 尚未配置可读取的 workspace，所以暂时没有核心文件列表。'
+                                  : '当前 Agent 还没有核心文件；保存任一文件后会自动在工作区中创建。'}
                               </div>
                             ) : (
                               <div className="space-y-2">
@@ -2751,8 +3135,8 @@ export default function Agents() {
                                       }}
                                       className={`w-full text-left rounded-xl border px-3 py-3 transition-colors ${
                                         active
-                                          ? 'border-violet-300 bg-violet-50/80 dark:bg-violet-950/20 dark:border-violet-800/60'
-                                          : 'border-gray-100 dark:border-gray-700 hover:border-violet-200 dark:hover:border-violet-800/60'
+                                          ? (modern ? 'border-sky-300 bg-sky-50/80 dark:bg-sky-950/20 dark:border-sky-800/60' : 'border-violet-300 bg-violet-50/80 dark:bg-violet-950/20 dark:border-violet-800/60')
+                                          : (modern ? 'border-slate-200/70 dark:border-slate-700 hover:border-sky-200 dark:hover:border-sky-800/60' : 'border-gray-100 dark:border-gray-700 hover:border-violet-200 dark:hover:border-violet-800/60')
                                       }`}
                                     >
                                       <div className="flex items-start justify-between gap-2">
@@ -2774,8 +3158,20 @@ export default function Agents() {
                             )}
                           </div>
 
-                          <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 space-y-4">
-                            {selectedCoreFile ? (
+                          <div className={softPanelClass}>
+                            {selectedCoreFilesState?.kind === 'restricted' ? (
+                              <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-10 text-center text-sm text-amber-700 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-200">
+                                当前工作区已配置，但因为安全限制无法展示文件内容。
+                              </div>
+                            ) : selectedCoreFilesState?.kind === 'error' ? (
+                              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-10 text-center text-sm text-red-700 dark:border-red-900/40 dark:bg-red-950/20 dark:text-red-200">
+                                核心文件读取失败，请先修复上方错误后再试。
+                              </div>
+                            ) : selectedCoreFilesState?.kind === 'missing' ? (
+                              <div className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 px-4 py-16 text-center text-sm text-gray-400">
+                                先为当前 Agent 配置 workspace，随后这里会显示对应核心文件内容。
+                              </div>
+                            ) : selectedCoreFile ? (
                               <>
                                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                                   <div>
@@ -2794,7 +3190,7 @@ export default function Agents() {
                                   <button
                                     onClick={saveAgentCoreFile}
                                     disabled={coreFileSaving}
-                                    className="px-3 py-2 text-xs rounded-lg bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50"
+                                    className={accentButtonClass}
                                   >
                                     {coreFileSaving ? '保存中...' : `保存 ${selectedCoreFile.name}`}
                                   </button>
@@ -2822,34 +3218,72 @@ export default function Agents() {
                     {detailTab === 'capabilities' && (
                       <div className="space-y-4">
                         <div className="rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-700 dark:border-sky-900/40 dark:bg-sky-950/20 dark:text-sky-200">
-                          对标官方 <span className="font-mono">Skills / Channels / Cron Jobs</span> 面板：本区先提供当前 Agent 的能力快照与上下文状态。当前版本里的 Skills 仍继承全局配置，后续如支持 per-agent allowlist，这里会继续承接覆盖策略。
+                          对齐官方 <span className="font-mono">Skills / Channel Routing / Cron Jobs</span> 心智：Skills 会按当前 Agent 的 <span className="font-mono">workspace</span> 与共享来源重新解析，Channels 只表示把消息路由到它的通道上下文，Cron Jobs 展示绑定到该 Agent 的计划任务；<span className="font-mono">HEARTBEAT.md</span> 仍在 Core Files 中维护。
                         </div>
-                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
                           <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 bg-gray-50/80 dark:bg-gray-900">
-                            <div className="text-xs text-gray-400">已启用技能（Enabled Skills）</div>
-                            <div className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">{enabledSkills.length}</div>
-                            <div className="mt-1 text-xs text-gray-500">共 {skills.length} 项，全局继承到当前 Agent。</div>
+                            <div className="text-xs text-gray-400">有效技能（Resolved Skills）</div>
+                            <div className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">{skillsLoading ? '…' : enabledSkills.length}</div>
+                            <div className="mt-1 text-xs text-gray-500">
+                              {skillsLoading
+                                ? '正在按当前 Agent 解析 Skills…'
+                                : `共 ${skills.length} 项；workspace skills 会覆盖共享 / bundled。`}
+                            </div>
                           </div>
                           <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 bg-gray-50/80 dark:bg-gray-900">
-                            <div className="text-xs text-gray-400">通道快照（Channels Snapshot）</div>
+                            <div className="text-xs text-gray-400">显式路由通道（Routing Channels）</div>
                             <div className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">{selectedAgentChannelSnapshot.length}</div>
-                            <div className="mt-1 text-xs text-gray-500">其中 {selectedAgentChannelSnapshot.filter(channel => channel.routeCount > 0).length} 个通道有显式规则指向它。</div>
+                            <div className="mt-1 text-xs text-gray-500">
+                              {selectedAgentIsDefault
+                                ? '显式 bindings 命中的通道数；它同时还是默认 Agent 的回落目标。'
+                                : '只统计显式 bindings 命中的通道路由上下文。'}
+                            </div>
                           </div>
                           <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 bg-gray-50/80 dark:bg-gray-900">
                             <div className="text-xs text-gray-400">定时任务（Cron Jobs）</div>
                             <div className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">{selectedAgentCronJobs.length}</div>
-                            <div className="mt-1 text-xs text-gray-500">以当前 Agent 作为 <span className="font-mono">sessionTarget</span> 的任务数量。</div>
+                            <div className="mt-1 text-xs text-gray-500">只统计通过 <span className="font-mono">agentId</span> 绑定到当前 Agent 的任务；<span className="font-mono">sessionTarget</span> 决定跑在 main 还是 isolated。</div>
+                          </div>
+                          <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 bg-gray-50/80 dark:bg-gray-900">
+                            <div className="text-xs text-gray-400">心跳文件（HEARTBEAT）</div>
+                            <div className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">{selectedHeartbeatFile?.exists ? '已配置' : '未配置'}</div>
+                            <div className="mt-1 text-xs text-gray-500">
+                              {selectedHeartbeatFile?.exists
+                                ? `最近更新 ${formatDateTime(selectedHeartbeatFile.modified)}`
+                                : '在 Core Files 中维护心跳检查清单。'}
+                            </div>
                           </div>
                         </div>
 
                         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
                           <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 space-y-3">
                             <div>
-                              <h4 className="text-sm font-semibold text-gray-900 dark:text-white">技能快照（Skills Snapshot）</h4>
-                              <p className="text-xs text-gray-500 mt-1">先展示当前系统里最常用、且会被当前 Agent 继承到的 Skills。</p>
+                              <h4 className="text-sm font-semibold text-gray-900 dark:text-white">技能快照（Resolved Skills）</h4>
+                              <p className="text-xs text-gray-500 mt-1">按当前 Agent 的 <span className="font-mono">workspace</span> 与共享来源解析有效 Skills；<span className="font-mono">skills.entries</span> 的启用/禁用仍是全局配置。</p>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-gray-500">
+                              <div className="rounded-lg border border-gray-100 dark:border-gray-700 px-3 py-2">
+                                <div className="text-gray-400">解析 Agent</div>
+                                <div className="mt-1 font-mono text-gray-700 dark:text-gray-200">{skillsContext.agentId || selectedAgent?.id || '—'}</div>
+                              </div>
+                              <div className="rounded-lg border border-gray-100 dark:border-gray-700 px-3 py-2">
+                                <div className="text-gray-400">workspace</div>
+                                <div className="mt-1 font-mono text-gray-700 dark:text-gray-200 truncate">{skillsContext.workspace || selectedAgent?.workspace || '未设置'}</div>
+                              </div>
+                              {selectedSkillSourceSummary.map(item => (
+                                <div key={item.key} className="rounded-lg border border-gray-100 dark:border-gray-700 px-3 py-2">
+                                  <div className="text-gray-400">{item.label}</div>
+                                  <div className="mt-1 text-gray-700 dark:text-gray-200">{item.count}</div>
+                                </div>
+                              ))}
                             </div>
                             <div className="space-y-2">
-                              {enabledSkills.slice(0, 5).map(skill => (
+                              {skillsLoading && (
+                                <div className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 px-4 py-6 text-sm text-gray-400 text-center">
+                                  正在按当前 Agent 解析 Skills…
+                                </div>
+                              )}
+                              {!skillsLoading && enabledSkills.slice(0, 5).map(skill => (
                                 <div key={skill.id} className="rounded-lg border border-gray-100 dark:border-gray-700 px-3 py-3">
                                   <div className="flex items-center justify-between gap-2">
                                     <div className="text-sm font-medium text-gray-900 dark:text-white">{skill.name || skill.id}</div>
@@ -2858,10 +3292,10 @@ export default function Agents() {
                                     </span>
                                   </div>
                                   <p className="mt-1 text-[11px] text-gray-500 line-clamp-2">{skill.description || '暂无描述'}</p>
-                                  <div className="mt-2 text-[11px] text-gray-400">{skill.source || 'global'}{skill.version ? ` · v${skill.version}` : ''}</div>
+                                  <div className="mt-2 text-[11px] text-gray-400">{humanizeSkillSource(skill.source)}{skill.version ? ` · v${skill.version}` : ''}</div>
                                 </div>
                               ))}
-                              {enabledSkills.length === 0 && (
+                              {!skillsLoading && enabledSkills.length === 0 && (
                                 <div className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 px-4 py-6 text-sm text-gray-400 text-center">
                                   当前没有启用中的技能。
                                 </div>
@@ -2871,8 +3305,8 @@ export default function Agents() {
 
                           <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 space-y-3">
                             <div>
-                              <h4 className="text-sm font-semibold text-gray-900 dark:text-white">通道快照（Channels Snapshot）</h4>
-                              <p className="text-xs text-gray-500 mt-1">从当前 Agent 视角查看相关通道、默认账号与显式路由规则数量。</p>
+                              <h4 className="text-sm font-semibold text-gray-900 dark:text-white">通道路由上下文（Routing Channels）</h4>
+                              <p className="text-xs text-gray-500 mt-1">通道本身是全局 Gateway 配置；这里只列出当前 Agent 命中的显式 bindings 对应通道。{selectedAgentIsDefault ? '它同时是默认 Agent，未命中显式规则的消息仍会回落到这里。' : ''}</p>
                             </div>
                             <div className="space-y-2">
                               {selectedAgentChannelSnapshot.map(channel => (
@@ -2892,7 +3326,9 @@ export default function Agents() {
                               ))}
                               {selectedAgentChannelSnapshot.length === 0 && (
                                 <div className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 px-4 py-6 text-sm text-gray-400 text-center">
-                                  当前还没有配置任何通道。
+                                  {selectedAgentIsDefault
+                                    ? '当前还没有显式 bindings 指向它；作为默认 Agent，未命中路由规则的消息仍会回落到这里。'
+                                    : '当前还没有显式 bindings 把任何通道路由到这个 Agent。'}
                                 </div>
                               )}
                             </div>
@@ -2901,7 +3337,7 @@ export default function Agents() {
                           <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 space-y-3">
                             <div>
                               <h4 className="text-sm font-semibold text-gray-900 dark:text-white">定时任务（Cron Jobs）</h4>
-                              <p className="text-xs text-gray-500 mt-1">展示当前以这个 Agent 为目标的任务，便于从单 Agent 视角做巡检。</p>
+                              <p className="text-xs text-gray-500 mt-1">这里只展示通过 <span className="font-mono">agentId</span> 绑定到当前 Agent 的任务；<span className="font-mono">sessionTarget</span> 决定运行在 main 还是 isolated，会不会等待心跳周期则由 <span className="font-mono">wakeMode</span> 决定。</p>
                             </div>
                             <div className="space-y-2">
                               {selectedAgentCronJobs.map(job => (
@@ -2913,6 +3349,7 @@ export default function Agents() {
                                     </span>
                                   </div>
                                   <div className="mt-2 text-[11px] text-gray-500">{formatCronSchedule(job.schedule)}</div>
+                                  <div className="mt-1 text-[11px] text-gray-400">执行模式：{job.sessionTarget === 'isolated' ? 'isolated cron 会话' : `main 会话（wakeMode: ${job.wakeMode || 'now'}）`}</div>
                                   <div className="mt-1 text-[11px] text-gray-400">最近执行：{formatDateTime(job.state?.lastRunAtMs || 0)}</div>
                                 </div>
                               ))}
@@ -2949,7 +3386,7 @@ export default function Agents() {
                               <h4 className="text-sm font-semibold text-gray-900 dark:text-white">引用它的路由规则（Bindings Targeting This Agent）</h4>
                               <p className="text-xs text-gray-500 mt-1">这能帮助你快速理解“为什么消息会来到这个 Agent”。</p>
                             </div>
-                            <button onClick={() => setWorkbenchView('routing')} className="px-3 py-2 text-xs rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600">
+                            <button onClick={() => setWorkbenchView('routing')} className={actionButtonClass}>
                               前往路由工作台（Open Routing Studio）
                             </button>
                           </div>
@@ -2962,21 +3399,28 @@ export default function Agents() {
                               const summary = buildBindingSummary(binding.match, channelMeta);
                               const tags = buildBindingTags(binding.match);
                               return (
-                                <div key={`${binding.agent}-${index}`} className="rounded-lg border border-gray-100 dark:border-gray-700 px-4 py-3">
+                                <div key={`${binding.agentId}-${index}`} className="rounded-lg border border-gray-100 dark:border-gray-700 px-4 py-3">
                                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                                     <div>
                                       <div className="flex flex-wrap items-center gap-2">
-                                        <span className="font-medium text-sm text-gray-900 dark:text-white">{binding.name.trim() || `规则 ${index + 1}`}</span>
+                                        <span className="font-medium text-sm text-gray-900 dark:text-white">{binding.comment.trim() || `规则 ${index + 1}`}</span>
+                                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${binding.type === 'acp' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200' : 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-200'}`}>
+                                          {binding.type === 'acp' ? 'ACP' : 'Route'}
+                                        </span>
+                                        {binding.enabled === false && (
+                                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200">
+                                            Legacy Disabled
+                                          </span>
+                                        )}
                                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-200">
                                           优先级：{humanizeBindingPriority(matchPriorityLabel(compactMatch(binding.match)))}
                                         </span>
-                                        {binding.enabled === false && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200">已停用</span>}
                                       </div>
                                       <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">{summary}</p>
                                       {tags.length > 0 && (
                                         <div className="mt-2 flex flex-wrap gap-1.5">
                                           {tags.map(tag => (
-                                            <span key={`${binding.agent}-${index}-${tag}`} className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-200">
+                                            <span key={`${binding.agentId}-${index}-${tag}`} className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-200">
                                               {tag}
                                             </span>
                                           ))}
@@ -2988,7 +3432,7 @@ export default function Agents() {
                                         setWorkbenchView('routing');
                                         setExpandedBindingIndex(index);
                                       }}
-                                      className="px-3 py-2 text-xs rounded-lg bg-violet-600 text-white hover:bg-violet-700"
+                                      className={accentButtonClass}
                                     >
                                       在工作台中编辑
                                     </button>
@@ -3072,7 +3516,7 @@ export default function Agents() {
                             </ul>
                           </div>
                         </div>
-                        <button onClick={() => openEdit(selectedAgent, 'advanced')} className="px-3 py-2 text-xs rounded-lg bg-violet-600 text-white hover:bg-violet-700">
+                        <button onClick={() => openEdit(selectedAgent, 'advanced')} className={accentButtonClass}>
                           打开高级 JSON（Open Advanced JSON）
                         </button>
                       </div>
@@ -3090,45 +3534,45 @@ export default function Agents() {
       ) : (
         <div className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-            <div className="rounded-xl border border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-sm">
+            <div className={`${modern ? 'page-modern-panel p-4' : 'rounded-xl border border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-sm'}`}>
               <div className="text-xs text-gray-400">规则总数</div>
               <div className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">{routingStats.total}</div>
             </div>
-            <div className="rounded-xl border border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-sm">
-              <div className="text-xs text-gray-400">已启用规则（Enabled）</div>
+            <div className={`${modern ? 'page-modern-panel p-4' : 'rounded-xl border border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-sm'}`}>
+              <div className="text-xs text-gray-400">显式规则（Official Bindings）</div>
               <div className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">{routingStats.enabled}</div>
             </div>
-            <div className="rounded-xl border border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-sm">
+            <div className={`${modern ? 'page-modern-panel p-4' : 'rounded-xl border border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-sm'}`}>
               <div className="text-xs text-gray-400">被路由引用的 Agent</div>
               <div className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">{routingStats.agents}</div>
             </div>
-            <div className="rounded-xl border border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-sm">
+            <div className={`${modern ? 'page-modern-panel p-4' : 'rounded-xl border border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-sm'}`}>
               <div className="text-xs text-gray-400">涉及通道（Channels）</div>
               <div className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">{routingStats.channels}</div>
             </div>
           </div>
 
-          <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700/50 shadow-sm">
+          <div className={panelClass}>
             <div className="px-4 py-4 border-b border-gray-100 dark:border-gray-700/50 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <h3 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-                  <Settings size={15} className="text-violet-500" />
+                  <Settings size={15} className={modern ? 'text-sky-500' : 'text-violet-500'} />
                   路由规则（Bindings）
                 </h3>
-                <p className="text-xs text-gray-500 mt-1">先写“这类消息交给谁”，必要时再展开底层 JSON。对普通用户优先显示自然语言摘要。</p>
+                <p className="text-xs text-gray-500 mt-1">结构化编辑器优先输出常用字段，并兼容保留 legacy sender / parentPeer / 字符串 peer 规则；遇到更复杂的历史写法时，再切到 JSON 模式。</p>
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={addBinding} className="px-2.5 py-1.5 text-xs rounded bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600">
+                <button onClick={addBinding} className={actionButtonClass}>
                   新增规则
                 </button>
-                <button onClick={saveBindings} disabled={saving} className="flex items-center gap-1 px-3 py-1.5 text-xs rounded bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50">
+                <button onClick={saveBindings} disabled={saving} className={accentButtonClass}>
                   <Save size={12} /> 保存规则
                 </button>
               </div>
             </div>
             <div className="px-4 pt-4">
-                <div className="rounded-xl border border-violet-100 bg-violet-50 px-4 py-3 text-xs text-violet-700 dark:border-violet-900/40 dark:bg-violet-950/20 dark:text-violet-200">
-                  固定优先级为 sender &gt; peer &gt; parentPeer &gt; guildId+roles &gt; guildId &gt; teamId &gt; accountId &gt; accountId:* &gt; channel；只有同优先级规则才按列表从上到下比较。未命中时会回落到默认 Agent「{defaultAgent}」。
+                <div className={`${modern ? 'rounded-xl border border-sky-200/70 bg-sky-500/10 px-4 py-3 text-xs text-sky-700 dark:border-sky-800/50 dark:text-sky-200' : 'rounded-xl border border-violet-100 bg-violet-50 px-4 py-3 text-xs text-violet-700 dark:border-violet-900/40 dark:bg-violet-950/20 dark:text-violet-200'}`}>
+                  当前优先级为 sender &gt; peer &gt; parent peer inheritance &gt; guild+roles &gt; guild &gt; team &gt; account &gt; account wildcard &gt; channel &gt; default；只有同一优先级才按列表顺序比较。未命中时会回落到默认 Agent「{defaultAgent}」。
                 </div>
             </div>
             <div className="p-4 space-y-3">
@@ -3139,11 +3583,13 @@ export default function Agents() {
               )}
 
               {bindings.map((row, idx) => {
+                const rawMatch = isPlainObject(row.match) ? row.match : {};
                 const match = compactMatch(row.match);
                 const channel = extractTextValue(match.channel);
                 const accountId = extractTextValue(match.accountId);
-                const peer = extractPeerForm(match, 'peer');
-                const parentPeer = extractPeerForm(match, 'parentPeer');
+                const sender = extractTextValue(match.sender);
+                const peer = extractPeerForm(rawMatch, 'peer');
+                const parentPeer = extractPeerForm(rawMatch, 'parentPeer');
                 const channelCfg = channel ? channelMeta[channel] : undefined;
                 const defaultAccount = channelCfg?.defaultAccount;
                 const accounts = channelCfg?.accounts || [];
@@ -3152,27 +3598,39 @@ export default function Agents() {
                 const tags = buildBindingTags(match);
 
                 return (
-                  <div key={idx} className="rounded-xl border border-gray-100 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-900/40">
+                  <div key={idx} className={`${modern ? 'page-modern-panel bg-white/70 dark:bg-slate-900/50' : 'rounded-xl border border-gray-100 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-900/40'}`}>
                     <div className="px-4 py-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                       <div className="flex-1 min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <button
                             onClick={() => setExpandedBindingIndex(prev => (prev === idx ? null : idx))}
-                            className="inline-flex items-center justify-center p-1 rounded hover:bg-white dark:hover:bg-gray-800"
+                            className={`inline-flex items-center justify-center p-1 rounded ${modern ? 'hover:bg-sky-500/10' : 'hover:bg-white dark:hover:bg-gray-800'}`}
                             aria-label={expanded ? '折叠规则' : '展开规则'}
                           >
                             {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                           </button>
-                          <span className="font-medium text-sm text-gray-900 dark:text-white">{row.name.trim() || `规则 ${idx + 1}`}</span>
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-200">
-                            → {row.agent}
+                          <span className="font-medium text-sm text-gray-900 dark:text-white">{row.comment.trim() || `规则 ${idx + 1}`}</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${row.type === 'acp' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200' : (modern ? 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-200' : 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-200')}`}>
+                            {row.type === 'acp' ? 'ACP' : 'Route'}
+                          </span>
+                          {row.enabled === false && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200">
+                              Legacy Disabled
+                            </span>
+                          )}
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${modern ? 'bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-200' : 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-200'}`}>
+                            → {row.agentId}
                           </span>
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-200">
                             优先级：{humanizeBindingPriority(priority)}
                           </span>
-                          {row.enabled === false && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200">已停用</span>}
                         </div>
                         <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">{buildBindingSummary(match, channelMeta)}</p>
+                        {row.type === 'acp' && (row.acp.mode || row.acp.label || row.acp.cwd || row.acp.backend) && (
+                          <p className="mt-2 text-[11px] text-emerald-700 dark:text-emerald-300">
+                            ACP：{row.acp.mode || '未指定模式'}{row.acp.label ? ` · ${row.acp.label}` : ''}{row.acp.backend ? ` · backend=${row.acp.backend}` : ''}{row.acp.cwd ? ` · cwd=${row.acp.cwd}` : ''}
+                          </p>
+                        )}
                         {tags.length > 0 && (
                           <div className="mt-2 flex flex-wrap gap-1.5">
                             {tags.map(tag => (
@@ -3184,8 +3642,8 @@ export default function Agents() {
                         )}
                       </div>
                       <div className="flex items-center gap-1">
-                        <button onClick={() => moveBinding(idx, -1)} className="p-1.5 rounded hover:bg-white dark:hover:bg-gray-800" title="上移"><ArrowUp size={13} /></button>
-                        <button onClick={() => moveBinding(idx, 1)} className="p-1.5 rounded hover:bg-white dark:hover:bg-gray-800" title="下移"><ArrowDown size={13} /></button>
+                        <button onClick={() => moveBinding(idx, -1)} className={`p-1.5 rounded ${modern ? 'hover:bg-sky-500/10' : 'hover:bg-white dark:hover:bg-gray-800'}`} title="上移"><ArrowUp size={13} /></button>
+                        <button onClick={() => moveBinding(idx, 1)} className={`p-1.5 rounded ${modern ? 'hover:bg-sky-500/10' : 'hover:bg-white dark:hover:bg-gray-800'}`} title="下移"><ArrowDown size={13} /></button>
                         <button onClick={() => removeBinding(idx)} className="p-1.5 rounded text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20" title="删除"><Trash2 size={13} /></button>
                       </div>
                     </div>
@@ -3194,25 +3652,25 @@ export default function Agents() {
                       <div className="border-t border-gray-100 dark:border-gray-700 px-4 py-4 space-y-4">
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                           <div>
-                            <label htmlFor={`binding-${idx}-name`} className="text-[11px] text-gray-500">规则名</label>
+                            <label htmlFor={`binding-${idx}-comment`} className="text-[11px] text-gray-500">备注 / 注释（comment）</label>
                             <input
-                              id={`binding-${idx}-name`}
-                              name={`binding-${idx}-name`}
-                              aria-label="规则名"
-                              value={row.name}
-                              onChange={e => setBindingAt(idx, r => ({ ...r, name: e.target.value }))}
+                              id={`binding-${idx}-comment`}
+                              name={`binding-${idx}-comment`}
+                              aria-label="binding comment"
+                              value={row.comment}
+                              onChange={e => setBindingAt(idx, r => ({ ...r, comment: e.target.value }))}
                               placeholder="例如 Discord 维护群"
                               className="w-full mt-1 px-2 py-2 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-900"
                             />
                           </div>
                           <div>
-                            <label htmlFor={`binding-${idx}-agent`} className="text-[11px] text-gray-500">目标 Agent</label>
+                            <label htmlFor={`binding-${idx}-agent`} className="text-[11px] text-gray-500">目标 Agent（agentId）</label>
                             <select
                               id={`binding-${idx}-agent`}
                               name={`binding-${idx}-agent`}
                               aria-label="目标 Agent"
-                              value={row.agent}
-                              onChange={e => setBindingAt(idx, r => ({ ...r, agent: e.target.value }))}
+                              value={row.agentId}
+                              onChange={e => setBindingAt(idx, r => ({ ...r, agentId: e.target.value }))}
                               className="w-full mt-1 px-2 py-2 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-900"
                             >
                               {(agentOptions.length ? agentOptions : ['main']).map(id => (
@@ -3220,34 +3678,37 @@ export default function Agents() {
                               ))}
                             </select>
                           </div>
-                          <div className="flex items-end">
-                            <label className="inline-flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
-                              <input
-                                type="checkbox"
-                                name={`binding-${idx}-enabled`}
-                                aria-label="启用这条规则"
-                                checked={row.enabled}
-                                onChange={e => setBindingAt(idx, r => ({ ...r, enabled: e.target.checked }))}
-                              />
-                              启用这条规则
-                            </label>
+                          <div>
+                            <label htmlFor={`binding-${idx}-type`} className="text-[11px] text-gray-500">规则类型（type）</label>
+                            <select
+                              id={`binding-${idx}-type`}
+                              name={`binding-${idx}-type`}
+                              aria-label="binding type"
+                              value={row.type}
+                              onChange={e => setBindingAt(idx, r => ({ ...r, type: e.target.value === 'acp' ? 'acp' : 'route' }))}
+                              className="w-full mt-1 px-2 py-2 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-900"
+                            >
+                              {BINDING_TYPE_OPTIONS.map(option => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
+                              ))}
+                            </select>
                           </div>
                         </div>
 
                         <div className="rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-[12px] text-sky-700 dark:border-sky-900/40 dark:bg-sky-950/20 dark:text-sky-200">
-                          结构化模式适合大多数人：直接描述“通道 / 账号 / 会话 / 角色”。只有需要复杂表达式时，再切到 JSON 高级模式。
+                          结构化模式会写入 type、agentId、comment、match，以及 type=acp 时的 acp；旧版 sender / parentPeer / 字符串 peer 规则也会继续保留。需要手动调整复杂 match JSON 时，再切到 JSON 模式。
                         </div>
 
                         <div className="flex items-center gap-2">
                           <button
                             onClick={() => switchBindingMode(idx, 'structured')}
-                            className={`px-2 py-1 text-[11px] rounded border ${row.mode === 'structured' ? 'bg-violet-600 text-white border-violet-600' : 'bg-white dark:bg-gray-900 text-gray-600 border-gray-200 dark:border-gray-700'}`}
+                            className={`px-2 py-1 text-[11px] rounded border ${row.mode === 'structured' ? (modern ? 'bg-sky-500 text-white border-sky-500' : 'bg-violet-600 text-white border-violet-600') : 'bg-white dark:bg-gray-900 text-gray-600 border-gray-200 dark:border-gray-700'}`}
                           >
                             结构化
                           </button>
                           <button
                             onClick={() => switchBindingMode(idx, 'json')}
-                            className={`px-2 py-1 text-[11px] rounded border ${row.mode === 'json' ? 'bg-violet-600 text-white border-violet-600' : 'bg-white dark:bg-gray-900 text-gray-600 border-gray-200 dark:border-gray-700'}`}
+                            className={`px-2 py-1 text-[11px] rounded border ${row.mode === 'json' ? (modern ? 'bg-sky-500 text-white border-sky-500' : 'bg-violet-600 text-white border-violet-600') : 'bg-white dark:bg-gray-900 text-gray-600 border-gray-200 dark:border-gray-700'}`}
                           >
                             JSON 高级模式
                           </button>
@@ -3256,9 +3717,36 @@ export default function Agents() {
 
                         {row.mode === 'structured' ? (
                           <div className="space-y-4">
+                            {row.type === 'acp' && (
+                              <div className="rounded-lg border border-emerald-100 dark:border-emerald-900/40 p-3">
+                                <h4 className="text-[11px] font-semibold text-gray-900 dark:text-white uppercase tracking-wide">ACP 配置</h4>
+                                <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-3">
+                                  <div>
+                                    <label htmlFor={`binding-${idx}-acp-mode`} className="text-[11px] text-gray-500">acp.mode</label>
+                                    <select id={`binding-${idx}-acp-mode`} value={row.acp.mode} onChange={e => setBindingAt(idx, r => ({ ...r, acp: { ...r.acp, mode: e.target.value } }))} className="w-full mt-1 px-2 py-2 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-900">
+                                      <option value="">未设置</option>
+                                      <option value="persistent">persistent</option>
+                                      <option value="oneshot">oneshot</option>
+                                    </select>
+                                  </div>
+                                  <div>
+                                    <label htmlFor={`binding-${idx}-acp-label`} className="text-[11px] text-gray-500">acp.label</label>
+                                    <input id={`binding-${idx}-acp-label`} value={row.acp.label} onChange={e => setBindingAt(idx, r => ({ ...r, acp: { ...r.acp, label: e.target.value } }))} placeholder="例如 support-shell" className="w-full mt-1 px-2 py-2 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-900" />
+                                  </div>
+                                  <div>
+                                    <label htmlFor={`binding-${idx}-acp-cwd`} className="text-[11px] text-gray-500">acp.cwd</label>
+                                    <input id={`binding-${idx}-acp-cwd`} value={row.acp.cwd} onChange={e => setBindingAt(idx, r => ({ ...r, acp: { ...r.acp, cwd: e.target.value } }))} placeholder="例如 workspaces/support" className="w-full mt-1 px-2 py-2 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-900" />
+                                  </div>
+                                  <div>
+                                    <label htmlFor={`binding-${idx}-acp-backend`} className="text-[11px] text-gray-500">acp.backend</label>
+                                    <input id={`binding-${idx}-acp-backend`} value={row.acp.backend} onChange={e => setBindingAt(idx, r => ({ ...r, acp: { ...r.acp, backend: e.target.value } }))} placeholder="例如 tmux" className="w-full mt-1 px-2 py-2 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-900" />
+                                  </div>
+                                </div>
+                              </div>
+                            )}
                             <div className="rounded-lg border border-gray-100 dark:border-gray-700 p-3">
                               <h4 className="text-[11px] font-semibold text-gray-900 dark:text-white uppercase tracking-wide">消息来源</h4>
-                              <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+                              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
                                 <div>
                                   <label htmlFor={`binding-${idx}-channel`} className="text-[11px] text-gray-500">通道 *</label>
                                   <input
@@ -3284,9 +3772,8 @@ export default function Agents() {
                                       className="w-full mt-1 px-2 py-2 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-900"
                                     >
                                       <option value="">(默认账号)</option>
-                                      <option value="*">*（全部账号）</option>
                                       {accounts.map(acc => <option key={acc} value={acc}>{acc}</option>)}
-                                      {accountId && accountId !== '*' && !accounts.includes(accountId) && (
+                                      {accountId && !accounts.includes(accountId) && (
                                         <option value={accountId}>{accountId} (custom)</option>
                                       )}
                                     </select>
@@ -3297,36 +3784,34 @@ export default function Agents() {
                                       aria-label="账号"
                                       value={accountId}
                                       onChange={e => touchBindingMatch(idx, cur => ({ ...cur, accountId: e.target.value }))}
-                                      placeholder="留空=默认账号，*=全部账号"
+                                      placeholder="留空=默认账号"
                                       className="w-full mt-1 px-2 py-2 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-900"
                                     />
                                   )}
                                   <p className="mt-1 text-[10px] text-gray-500">
                                     {!accountId
                                       ? `当前留空，仅匹配默认账号${defaultAccount ? ` (${defaultAccount})` : ''}`
-                                      : accountId === '*'
-                                        ? '匹配该 channel 的所有账号（常用于兜底）'
-                                        : `仅匹配账号 ${accountId}`}
+                                      : `仅匹配账号 ${accountId}`}
                                   </p>
-                                </div>
-                                <div>
-                                  <label htmlFor={`binding-${idx}-sender`} className="text-[11px] text-gray-500">发送者</label>
-                                  <input
-                                    id={`binding-${idx}-sender`}
-                                    name={`binding-${idx}-sender`}
-                                    aria-label="发送者"
-                                    value={extractTextValue(match.sender)}
-                                    onChange={e => touchBindingMatch(idx, cur => ({ ...cur, sender: e.target.value }))}
-                                    placeholder="例如 +15551230001"
-                                    className="w-full mt-1 px-2 py-2 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-900"
-                                  />
                                 </div>
                               </div>
                             </div>
 
                             <div className="rounded-lg border border-gray-100 dark:border-gray-700 p-3">
-                              <h4 className="text-[11px] font-semibold text-gray-900 dark:text-white uppercase tracking-wide">会话范围</h4>
-                              <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-3">
+                              <h4 className="text-[11px] font-semibold text-gray-900 dark:text-white uppercase tracking-wide">会话匹配</h4>
+                              <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+                                <div>
+                                  <label htmlFor={`binding-${idx}-sender`} className="text-[11px] text-gray-500">sender（兼容字段）</label>
+                                  <input
+                                    id={`binding-${idx}-sender`}
+                                    name={`binding-${idx}-sender`}
+                                    aria-label="sender"
+                                    value={sender}
+                                    onChange={e => touchBindingMatch(idx, cur => ({ ...cur, sender: e.target.value }))}
+                                    placeholder="例如 user-10001"
+                                    className="w-full mt-1 px-2 py-2 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-900"
+                                  />
+                                </div>
                                 <div>
                                   <label htmlFor={`binding-${idx}-peer-kind`} className="text-[11px] text-gray-500">peer.kind</label>
                                   <input
@@ -3351,8 +3836,10 @@ export default function Agents() {
                                     className="w-full mt-1 px-2 py-2 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-900"
                                   />
                                 </div>
+                              </div>
+                              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
                                 <div>
-                                  <label htmlFor={`binding-${idx}-parent-peer-kind`} className="text-[11px] text-gray-500">parentPeer.kind</label>
+                                  <label htmlFor={`binding-${idx}-parent-peer-kind`} className="text-[11px] text-gray-500">parentPeer.kind（兼容字段）</label>
                                   <input
                                     id={`binding-${idx}-parent-peer-kind`}
                                     name={`binding-${idx}-parent-peer-kind`}
@@ -3364,18 +3851,19 @@ export default function Agents() {
                                   />
                                 </div>
                                 <div>
-                                  <label htmlFor={`binding-${idx}-parent-peer-id`} className="text-[11px] text-gray-500">parentPeer.id</label>
+                                  <label htmlFor={`binding-${idx}-parent-peer-id`} className="text-[11px] text-gray-500">parentPeer.id（兼容字段）</label>
                                   <input
                                     id={`binding-${idx}-parent-peer-id`}
                                     name={`binding-${idx}-parent-peer-id`}
                                     aria-label="parent peer id"
                                     value={parentPeer.id}
                                     onChange={e => setPeerField(idx, 'parentPeer', 'id', e.target.value)}
-                                    placeholder="上级会话 id"
+                                    placeholder="release-notes / group-01"
                                     className="w-full mt-1 px-2 py-2 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-900"
                                   />
                                 </div>
                               </div>
+                              <p className="mt-2 text-[10px] text-gray-500">sender / parentPeer 属于旧版兼容字段；如果你只对齐当前官方 schema，可保持留空。像 <span className="font-mono">peer: \"group:*\"</span> 这类旧语法会在保存时继续原样保留。</p>
                             </div>
 
                             <div className="rounded-lg border border-gray-100 dark:border-gray-700 p-3">
@@ -3449,11 +3937,11 @@ export default function Agents() {
             </div>
           </div>
 
-          <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700/50 shadow-sm">
+          <div className={panelClass}>
             <div className="px-4 py-4 border-b border-gray-100 dark:border-gray-700/50 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <h3 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-                  <Route size={15} className="text-violet-500" />
+                  <Route size={15} className={modern ? 'text-sky-500' : 'text-violet-500'} />
                   消息分流模拟（Routing Simulator）
                 </h3>
                 <p className="text-xs text-gray-500 mt-1">把消息场景描述清楚，然后看系统最终会把它交给谁。</p>
@@ -3461,18 +3949,18 @@ export default function Agents() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setPreviewMeta(DEFAULT_PREVIEW_META)}
-                  className="px-3 py-1.5 text-xs rounded bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600"
+                  className={actionButtonClass}
                 >
                   清空输入
                 </button>
-                <button onClick={runPreview} disabled={previewLoading} className="px-3 py-1.5 text-xs rounded bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50">
+                <button onClick={runPreview} disabled={previewLoading} className={accentButtonClass}>
                   {previewLoading ? '模拟中...' : '执行模拟'}
                 </button>
               </div>
             </div>
             <div className="p-4 space-y-4">
-              <div className="rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-xs text-sky-700 dark:border-sky-900/40 dark:bg-sky-950/20 dark:text-sky-200">
-                普通使用流程：先填“通道 / 账号 / 发送者”，再按需补充群聊、线程、Discord/Slack 相关条件。
+              <div className={`${modern ? 'rounded-xl border border-sky-200/70 bg-sky-500/10 px-4 py-3 text-xs text-sky-700 dark:border-sky-800/50 dark:text-sky-200' : 'rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-xs text-sky-700 dark:border-sky-900/40 dark:bg-sky-950/20 dark:text-sky-200'}`}>
+                普通使用流程：先填“通道 / 账号”，再按需补充会话、父会话继承、Discord/Slack 相关条件。
               </div>
               {PREVIEW_GROUPS.map(group => (
                 <div key={group.title} className="rounded-xl border border-gray-100 dark:border-gray-700 p-4">
@@ -3507,23 +3995,26 @@ export default function Agents() {
             {previewResult && (
               <div className="px-4 pb-4">
                 <div className="rounded-xl border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 space-y-4">
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-                    <div className="rounded-lg bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 px-3 py-3">
-                      <div className="text-xs text-gray-400">命中 Agent（Resolved Agent）</div>
-                      <div className="mt-1 font-mono text-violet-600 dark:text-violet-300">{previewResult.agent || defaultAgent || '-'}</div>
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                      <div className="rounded-lg bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 px-3 py-3">
+                        <div className="text-xs text-gray-400">命中 Agent（Resolved Agent）</div>
+                        <div className={`mt-1 font-mono ${modern ? 'text-sky-600 dark:text-sky-300' : 'text-violet-600 dark:text-violet-300'}`}>{previewResult.agent || defaultAgent || '-'}</div>
+                      </div>
+                      <div className="rounded-lg bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 px-3 py-3">
+                        <div className="text-xs text-gray-400">命中规则（Matched Rule）</div>
+                        <div className="mt-1 text-gray-900 dark:text-white">{previewExplanation?.ruleLabel || previewResult.matchedBy || '默认回落'}</div>
+                      </div>
+                      <div className="rounded-lg bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 px-3 py-3">
+                        <div className="text-xs text-gray-400">命中优先级（Matched Tier）</div>
+                        <div className="mt-1 font-mono text-gray-700 dark:text-gray-200">{OFFICIAL_MATCHED_BY_LABELS[previewResult.matchedBy || ''] || previewResult.matchedBy || 'default'}</div>
+                        {typeof previewResult.matchedIndex === 'number' && previewResult.matchedIndex >= 0 && (
+                          <div className="mt-1 text-[11px] text-gray-500">bindings[{previewResult.matchedIndex}]</div>
+                        )}
+                      </div>
                     </div>
-                    <div className="rounded-lg bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 px-3 py-3">
-                      <div className="text-xs text-gray-400">命中规则（Matched Rule）</div>
-                      <div className="mt-1 text-gray-900 dark:text-white">{previewExplanation?.ruleLabel || previewResult.matchedBy || '默认回落'}</div>
-                    </div>
-                    <div className="rounded-lg bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 px-3 py-3">
-                      <div className="text-xs text-gray-400">技术命中点（Trace Key）</div>
-                      <div className="mt-1 font-mono text-gray-700 dark:text-gray-200">{previewResult.matchedBy || 'default'}</div>
-                    </div>
-                  </div>
 
                   {previewExplanation && (
-                    <div className="rounded-xl border border-violet-100 bg-violet-50 px-4 py-3 text-sm text-violet-700 dark:border-violet-900/40 dark:bg-violet-950/20 dark:text-violet-200">
+                    <div className={`${modern ? 'rounded-xl border border-sky-200/70 bg-sky-500/10 px-4 py-3 text-sm text-sky-700 dark:border-sky-800/50 dark:text-sky-200' : 'rounded-xl border border-violet-100 bg-violet-50 px-4 py-3 text-sm text-violet-700 dark:border-violet-900/40 dark:bg-violet-950/20 dark:text-violet-200'}`}>
                       <div className="font-medium">{previewExplanation.headline}</div>
                       <div className="mt-1">{previewExplanation.detail}</div>
                     </div>
@@ -3555,8 +4046,8 @@ export default function Agents() {
 
       {showForm && (
         <div className="fixed inset-0 z-[220] bg-black/40 flex items-center justify-center p-4">
-          <div className="w-full max-w-5xl max-h-[92vh] overflow-hidden rounded-xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 shadow-xl flex flex-col">
-            <div className="sticky top-0 z-10 border-b border-gray-100 dark:border-gray-700 bg-white/95 dark:bg-gray-800/95 backdrop-blur">
+          <div className={`w-full max-w-5xl max-h-[92vh] overflow-hidden rounded-xl border shadow-xl flex flex-col ${modern ? 'bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(239,246,255,0.92))] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.96),rgba(12,74,110,0.24))] border-sky-200/60 dark:border-sky-900/40 backdrop-blur-xl' : 'bg-white dark:bg-gray-800 border-gray-100 dark:border-gray-700'}`}>
+            <div className={`sticky top-0 z-10 border-b backdrop-blur ${modern ? 'border-sky-200/60 dark:border-sky-900/40 bg-white/80 dark:bg-slate-900/75' : 'border-gray-100 dark:border-gray-700 bg-white/95 dark:bg-gray-800/95'}`}>
               <div className="px-5 py-4 flex items-start justify-between gap-4">
                 <div>
                   <h3 className="font-semibold text-gray-900 dark:text-white">{editingId ? `编辑智能体（Edit Agent）: ${editingId}` : '新建智能体（New Agent）'}</h3>
@@ -3564,7 +4055,7 @@ export default function Agents() {
                     先完成基础信息（Basic），再按需进入其它部分。高级 JSON（Advanced）会保留完整覆盖能力。
                   </p>
                 </div>
-                  <button onClick={closeForm} className="text-xs px-2.5 py-1.5 rounded bg-gray-100 dark:bg-gray-700 shrink-0">关闭（Close）</button>
+                  <button onClick={closeForm} className={modern ? 'page-modern-action text-xs px-2.5 py-1.5 shrink-0' : 'text-xs px-2.5 py-1.5 rounded bg-gray-100 dark:bg-gray-700 shrink-0'}>关闭（Close）</button>
               </div>
               <div className="px-5 pb-4 space-y-3">
                 <div className="flex flex-wrap gap-2">
@@ -3572,10 +4063,10 @@ export default function Agents() {
                     <button
                       key={section.id}
                       onClick={() => setFormSection(section.id)}
-                      className={`px-3 py-2 rounded-lg text-xs border transition-colors ${formSection === section.id ? 'bg-violet-600 text-white border-violet-600' : 'bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-violet-300'}`}
+                      className={`px-3 py-2 rounded-lg text-xs border transition-colors ${formSection === section.id ? (modern ? 'bg-sky-500 text-white border-sky-500 shadow-sm shadow-sky-500/20' : 'bg-violet-600 text-white border-violet-600') : (modern ? 'bg-white/80 dark:bg-slate-900/70 text-slate-600 dark:text-slate-300 border-slate-200/80 dark:border-slate-700 hover:border-sky-300' : 'bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-violet-300')}`}
                     >
                       <div className="font-medium">{section.title}</div>
-                      <div className={`mt-0.5 ${formSection === section.id ? 'text-violet-100' : 'text-gray-400'}`}>{section.description}</div>
+                      <div className={`mt-0.5 ${formSection === section.id ? (modern ? 'text-sky-100' : 'text-violet-100') : 'text-gray-400'}`}>{section.description}</div>
                     </button>
                   ))}
                 </div>
@@ -3839,7 +4330,12 @@ export default function Agents() {
                   <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 space-y-4">
                     <div>
                       <h4 className="text-sm font-semibold text-gray-900 dark:text-white">身份摘要（Identity）</h4>
-                      <p className="text-xs text-gray-500 mt-1">已对齐官方 <span className="font-mono">openclaw agents set-identity</span>：保存时写入 <span className="font-mono">identity.name / theme / emoji / avatar</span>。</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <p className="text-xs text-gray-500">结构化表单会写入 <span className="font-mono">identity.name / theme / emoji / avatar</span>，并保持与当前后端接受字段一致。</p>
+                        <button type="button" onClick={importIdentityFromCoreFile} className={modern ? 'page-modern-action px-2.5 py-1 text-[11px]' : 'px-2.5 py-1 text-[11px] rounded bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600'}>
+                          从 IDENTITY.md 导入
+                        </button>
+                      </div>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div>
@@ -3877,6 +4373,29 @@ export default function Agents() {
                           placeholder="工作区相对路径、http(s) URL 或 data URI"
                           className="w-full mt-1 px-3 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
                         />
+                        {formAvatarValidationError ? (
+                          <p className="mt-1 text-[11px] text-red-600">{formAvatarValidationError}</p>
+                        ) : (
+                          <p className="mt-1 text-[11px] text-gray-500">允许 http(s)、data:image/... / data: 以及工作区相对路径；不支持 ~、绝对路径和 file:// / ftp:// 等非 http(s) 协议。</p>
+                        )}
+                      </div>
+                      <div className="md:col-span-2">
+                        <div className="rounded-xl border border-gray-100 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-900 px-4 py-4">
+                          <div className="text-xs text-gray-400">头像预览（Avatar Preview）</div>
+                          {formAvatarPreview ? (
+                            <div className="mt-3 flex items-center gap-4">
+                              <img src={formAvatarPreview} alt="Identity avatar preview" className="h-16 w-16 rounded-2xl object-cover border border-white/60 dark:border-slate-700 bg-white dark:bg-slate-950" />
+                              <div className="text-xs text-gray-500 leading-relaxed">
+                                <div>{/^data:/i.test(form.identityAvatar) ? '将直接渲染 data URI。' : /^https?:\/\//i.test(form.identityAvatar) ? '将直接渲染远程 URL。' : '将通过本地 avatar 预览接口读取工作区文件。'}</div>
+                                {!editingId && !form.id.trim() && !/^https?:\/\//i.test(form.identityAvatar) && !/^data:/i.test(form.identityAvatar) && (
+                                  <div className="mt-1">若要预览工作区相对路径，请先填写 Agent ID。</div>
+                                )}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="mt-2 text-xs text-gray-500">输入合法的头像值后，这里会显示可用预览。</div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -4210,12 +4729,14 @@ export default function Agents() {
                         <label className="text-xs text-gray-500">会话可见性（Session Visibility）</label>
                         <select
                           value={form.sessionVisibility}
-                          onChange={e => updateForm({ sessionVisibility: e.target.value as '' | 'same-agent' | 'all-agents' }, 'tools')}
+                          onChange={e => updateForm({ sessionVisibility: e.target.value as SessionVisibility }, 'tools')}
                           className="w-full mt-1 px-3 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
                         >
                           <option value="">继承默认</option>
-                          <option value="same-agent">仅当前 Agent（same-agent）</option>
-                          <option value="all-agents">所有 Agent（all-agents）</option>
+                          <option value="self">仅当前会话（self）</option>
+                          <option value="tree">当前会话树（tree）</option>
+                          <option value="agent">当前 Agent 的全部会话（agent）</option>
+                          <option value="all">所有会话（all）</option>
                         </select>
                       </div>
                     </div>
@@ -4370,13 +4891,13 @@ export default function Agents() {
               )}
             </div>
 
-            <div className="sticky bottom-0 border-t border-gray-100 dark:border-gray-700 bg-white/95 dark:bg-gray-800/95 backdrop-blur px-5 py-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div className={`sticky bottom-0 border-t backdrop-blur px-5 py-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3 ${modern ? 'border-sky-200/60 dark:border-sky-900/40 bg-white/80 dark:bg-slate-900/75' : 'border-gray-100 dark:border-gray-700 bg-white/95 dark:bg-gray-800/95'}`}>
               <div className={`text-[11px] ${footerValidationIsError ? 'text-red-600' : 'text-gray-500'}`}>
                 {footerValidationMessage}
               </div>
               <div className="flex items-center justify-end gap-2">
-                <button onClick={closeForm} className="px-4 py-2 text-xs rounded bg-gray-100 dark:bg-gray-700">取消（Cancel）</button>
-                <button onClick={saveAgent} disabled={saving || !!saveBlockedReason} title={saveBlockedReason || ''} className="px-4 py-2 text-xs rounded bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed">
+                <button onClick={closeForm} className={modern ? 'page-modern-action px-4 py-2 text-xs' : 'px-4 py-2 text-xs rounded bg-gray-100 dark:bg-gray-700'}>取消（Cancel）</button>
+                <button onClick={saveAgent} disabled={saving || !!saveBlockedReason} title={saveBlockedReason || ''} className={modern ? 'page-modern-accent px-4 py-2 text-xs disabled:opacity-50 disabled:cursor-not-allowed' : 'px-4 py-2 text-xs rounded bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed'}>
                   {saving ? '保存中...' : '保存智能体（Save Agent）'}
                 </button>
               </div>

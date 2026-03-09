@@ -433,6 +433,72 @@ func TestWriteOpenClawJSONNormalizesLegacyPanelFields(t *testing.T) {
 	}
 }
 
+func TestWriteOpenClawJSONKeepsFeishuDefaultAccountFirstInFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfg := &Config{OpenClawDir: dir}
+
+	input := map[string]interface{}{
+		"channels": map[string]interface{}{
+			"feishu": map[string]interface{}{
+				"defaultAccount": "fly",
+				"accounts": map[string]interface{}{
+					"default": map[string]interface{}{
+						"appId":     "cli_default",
+						"appSecret": "secret_default",
+						"enabled":   false,
+					},
+					"fly": map[string]interface{}{
+						"appId":     "cli_fly",
+						"appSecret": "secret_fly",
+						"enabled":   true,
+					},
+					"work": map[string]interface{}{
+						"appId":     "cli_work",
+						"appSecret": "secret_work",
+						"enabled":   false,
+					},
+				},
+			},
+		},
+	}
+
+	if err := cfg.WriteOpenClawJSON(input); err != nil {
+		t.Fatalf("WriteOpenClawJSON failed: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "openclaw.json"))
+	if err != nil {
+		t.Fatalf("read written config: %v", err)
+	}
+	text := string(raw)
+	accountsIdx := strings.Index(text, "\"accounts\": {")
+	if accountsIdx < 0 {
+		t.Fatalf("expected accounts block in written config, got %s", text)
+	}
+	accountsBlock := text[accountsIdx:]
+	flyIdx := strings.Index(accountsBlock, "\"fly\": {")
+	defaultIdx := strings.Index(accountsBlock, "\"default\": {")
+	workIdx := strings.Index(accountsBlock, "\"work\": {")
+	if flyIdx < 0 || defaultIdx < 0 || workIdx < 0 {
+		t.Fatalf("expected all account entries in accounts block, got %s", accountsBlock)
+	}
+	if flyIdx > defaultIdx || flyIdx > workIdx {
+		t.Fatalf("expected default account fly to be written first, got %s", accountsBlock)
+	}
+
+	saved, err := cfg.ReadOpenClawJSON()
+	if err != nil {
+		t.Fatalf("ReadOpenClawJSON failed: %v", err)
+	}
+	channels, _ := saved["channels"].(map[string]interface{})
+	feishu, _ := channels["feishu"].(map[string]interface{})
+	if got, _ := feishu["defaultAccount"].(string); got != "fly" {
+		t.Fatalf("expected defaultAccount to remain fly after write, got %q", got)
+	}
+}
+
 func TestReadQQChannelStateSupportsJSON5(t *testing.T) {
 	t.Parallel()
 

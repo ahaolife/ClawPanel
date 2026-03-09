@@ -30,9 +30,9 @@ const FAKE_CLAWHUB_SKILLS = [
 ];
 
 const FAKE_CRON_JOBS = [
-  { id: 'cron_1', name: '每日早报', enabled: true, schedule: { kind: 'cron', expr: '0 8 * * *' }, sessionTarget: 'main', wakeMode: 'now', payload: { kind: 'text', text: '请生成今日早报，包含科技、AI、财经要闻', deliver: true, channel: 'qq' }, state: { lastRunAtMs: Date.now() - 86400000, lastStatus: 'ok' }, createdAtMs: Date.now() - 604800000 },
-  { id: 'cron_2', name: '系统健康检查', enabled: true, schedule: { kind: 'cron', expr: '*/30 * * * *' }, sessionTarget: 'main', wakeMode: 'now', payload: { kind: 'text', text: '检查系统状态并报告', deliver: false }, state: { lastRunAtMs: Date.now() - 1800000, lastStatus: 'ok' }, createdAtMs: Date.now() - 1209600000 },
-  { id: 'cron_3', name: '周报生成', enabled: false, schedule: { kind: 'cron', expr: '0 18 * * 5' }, sessionTarget: 'main', wakeMode: 'now', payload: { kind: 'text', text: '生成本周工作总结', deliver: true, channel: 'qq' }, state: {}, createdAtMs: Date.now() - 2592000000 },
+  { id: 'cron_1', name: '每日早报', enabled: true, schedule: { kind: 'cron', expr: '0 8 * * *' }, agentId: 'main', sessionTarget: 'main', wakeMode: 'now', payload: { kind: 'text', text: '请生成今日早报，包含科技、AI、财经要闻', deliver: true, channel: 'qq' }, state: { lastRunAtMs: Date.now() - 86400000, lastStatus: 'ok' }, createdAtMs: Date.now() - 604800000 },
+  { id: 'cron_2', name: '系统健康检查', enabled: true, schedule: { kind: 'every', everyMs: 1800000 }, agentId: 'main', sessionTarget: 'isolated', wakeMode: 'now', payload: { kind: 'text', text: '检查系统状态并报告', deliver: false }, state: { lastRunAtMs: Date.now() - 1800000, lastStatus: 'ok' }, createdAtMs: Date.now() - 1209600000 },
+  { id: 'cron_3', name: '周报生成', enabled: false, schedule: { kind: 'cron', expr: '0 18 * * 5' }, agentId: 'main', sessionTarget: 'main', wakeMode: 'now', payload: { kind: 'text', text: '生成本周工作总结', deliver: true, channel: 'qq' }, state: {}, createdAtMs: Date.now() - 2592000000 },
 ];
 
 const FAKE_AGENTS = {
@@ -49,7 +49,7 @@ const FAKE_AGENTS = {
       tools: {
         profile: 'full',
         agentToAgent: { enabled: true, allow: ['translation', 'reviewer'] },
-        sessions: { visibility: 'same-agent' },
+        sessions: { visibility: 'agent' },
       },
       groupChat: { enabled: true },
       sandbox: { mode: 'all', workspaceAccess: 'rw' },
@@ -88,7 +88,7 @@ const FAKE_AGENTS = {
     },
   ],
   bindings: [
-    { name: 'work-group', enabled: true, agent: 'work', match: { channel: 'qq', peer: 'group:123' } },
+    { type: 'route', agentId: 'work', comment: 'work-group', match: { channel: 'qq', peer: { kind: 'group', id: '123' } } },
   ],
 };
 
@@ -148,6 +148,11 @@ const FAKE_CONFIG: any = {
   env: { vars: {} },
   hooks: {},
   commands: {},
+  tools: {
+    sessions: { visibility: 'tree' },
+    web: { search: { provider: 'brave', apiKey: 'brave-demo-key', maxResults: 5 } },
+    exec: { timeoutSec: 30, security: 'allowlist', ask: 'on-miss', safeBins: ['ls', 'cat', 'echo', 'grep', 'git'] },
+  },
 };
 
 const FAKE_FILES: any[] = [
@@ -224,7 +229,7 @@ export const mockApi = {
   },
   getBindings: async () => { await delay(120); return { ok: true, bindings: JSON.parse(JSON.stringify(FAKE_AGENTS.bindings)) }; },
   updateBindings: async (_bindings: any[]) => { await delay(200); return { ok: true }; },
-  previewRoute: async (_meta: any) => { await delay(180); return { ok: true, result: { agent: 'work', matchedBy: 'bindings[0].match.peer', trace: ['hit bindings[0]'] } }; },
+  previewRoute: async (_meta: any) => { await delay(180); return { ok: true, result: { agent: 'work', matchedBy: 'binding.peer', matchedIndex: 0, trace: ['scope channel=qq account= defaultAccount= peer=group:123 parentPeer=none guild= team= roles=none', 'select bindings[0]: peer'] } }; },
   getModels: async () => { await delay(100); return { ok: true, models: FAKE_CONFIG.models }; },
   updateModels: async (_data: any) => { await delay(200); return { ok: true }; },
   getChannels: async () => { await delay(100); return { ok: true, channels: FAKE_CONFIG.channels }; },
@@ -269,6 +274,7 @@ export const mockApi = {
   workspaceClean: async () => { await delay(300); return { ok: true, deleted: ['old-file.log'] }; },
   workspaceDownloadUrl: (_filePath: string) => '#',
   workspacePreviewUrl: (_filePath: string) => '/logo.jpg',
+  agentIdentityAvatarUrl: (_agentId: string) => '/logo.jpg',
   workspacePreview: async (_filePath: string) => { await delay(200); return { ok: true, type: 'text', content: '# OpenClaw Demo\n\nThis is a demo workspace file.\n\n## Features\n- AI-powered chatbot management\n- Multi-channel support\n- Skill plugins\n- Scheduled tasks' }; },
   workspaceNotes: async () => { await delay(100); return { ok: true, notes: { 'openclaw.json': '主配置文件', 'system-prompt.md': 'Bot 系统提示词' } }; },
   workspaceSetNote: async () => { await delay(200); return { ok: true }; },

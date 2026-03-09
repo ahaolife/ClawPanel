@@ -107,6 +107,28 @@ func TestSaveOpenClawConfigRejectsInvalidNumericFields(t *testing.T) {
 			},
 			want: "agents.defaults.compaction.maxHistoryShare",
 		},
+		{
+			name: "invalid bootstrap max chars",
+			config: map[string]interface{}{
+				"agents": map[string]interface{}{
+					"defaults": map[string]interface{}{
+						"bootstrapMaxChars": 0,
+					},
+				},
+			},
+			want: "agents.defaults.bootstrapMaxChars",
+		},
+		{
+			name: "invalid bootstrap total max chars",
+			config: map[string]interface{}{
+				"agents": map[string]interface{}{
+					"defaults": map[string]interface{}{
+						"bootstrapTotalMaxChars": 0,
+					},
+				},
+			},
+			want: "agents.defaults.bootstrapTotalMaxChars",
+		},
 	}
 
 	for _, tc := range tests {

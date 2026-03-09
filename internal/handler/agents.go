@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -155,6 +154,10 @@ func CreateOpenClawAgent(cfg *config.Config) gin.HandlerFunc {
 				c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": err.Error()})
 				return
 			}
+			if err := validateAgentIdentityConfig(cfg, id, merged); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": err.Error()})
+				return
+			}
 			workspace := strings.TrimSpace(toString(merged["workspace"]))
 			agentDir := strings.TrimSpace(toString(merged["agentDir"]))
 			if err := validateAgentUniqueness(cfg, list, id, workspace, agentDir, id); err != nil {
@@ -164,6 +167,10 @@ func CreateOpenClawAgent(cfg *config.Config) gin.HandlerFunc {
 			list[existingIdx] = merged
 		} else {
 			if err := validateAgentContextConfig(newItem); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": err.Error()})
+				return
+			}
+			if err := validateAgentIdentityConfig(cfg, id, newItem); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": err.Error()})
 				return
 			}
@@ -249,6 +256,10 @@ func UpdateOpenClawAgent(cfg *config.Config) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": err.Error()})
 			return
 		}
+		if err := validateAgentIdentityConfig(cfg, id, merged); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": err.Error()})
+			return
+		}
 
 		workspace := strings.TrimSpace(toString(merged["workspace"]))
 		agentDir := strings.TrimSpace(toString(merged["agentDir"]))
@@ -291,6 +302,12 @@ func DeleteOpenClawAgent(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 		preserveSessions := strings.EqualFold(c.DefaultQuery("preserveSessions", "false"), "true")
+		openClawPath := filepath.Join(cfg.OpenClawDir, "openclaw.json")
+		originalOpenClawJSON, err := os.ReadFile(openClawPath)
+		if err != nil && !os.IsNotExist(err) {
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
+			return
+		}
 
 		ocConfig, _ := cfg.ReadOpenClawJSON()
 		if ocConfig == nil {
@@ -331,6 +348,11 @@ func DeleteOpenClawAgent(cfg *config.Config) gin.HandlerFunc {
 		if defaultID == id {
 			defaultID = pickFallbackDefault(filtered)
 		}
+		if cronCfg, ok := ocConfig["cron"].(map[string]interface{}); ok {
+			if jobs, ok := cronCfg["jobs"].([]interface{}); ok {
+				rewriteDeletedAgentCronJobs(jobs, id, defaultID)
+			}
+		}
 		cronPath, originalCronData, updatedCronData, cronChanged, err := rewriteCronSessionTargetsForDeletedAgent(cfg, id, defaultID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
@@ -349,24 +371,36 @@ func DeleteOpenClawAgent(cfg *config.Config) gin.HandlerFunc {
 		}
 
 		if cronChanged {
-			if err := os.WriteFile(cronPath, updatedCronData, 0644); err != nil {
+			if err := replaceFileAtomically(cronPath, updatedCronData, 0644); err != nil {
+				if stagedSessionsDir != "" {
+					if restoreErr := os.Rename(stagedSessionsDir, sessionsDir); restoreErr != nil {
+						c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": fmt.Sprintf("写入 cron 配置失败，且恢复 sessions 失败: %v / %v", err, restoreErr)})
+						return
+					}
+				}
 				c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": fmt.Sprintf("写入 cron 配置失败: %v", err)})
 				return
 			}
 		}
 
 		if err := cfg.WriteOpenClawJSON(ocConfig); err != nil {
+			restoreFailures := make([]string, 0, 3)
+			if restoreErr := restoreFile(openClawPath, originalOpenClawJSON); restoreErr != nil {
+				restoreFailures = append(restoreFailures, fmt.Sprintf("恢复 openclaw.json 失败: %v", restoreErr))
+			}
 			if stagedSessionsDir != "" {
 				if restoreErr := os.Rename(stagedSessionsDir, sessionsDir); restoreErr != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": fmt.Sprintf("写入配置失败，且恢复 sessions 失败: %v / %v", err, restoreErr)})
-					return
+					restoreFailures = append(restoreFailures, fmt.Sprintf("恢复 sessions 失败: %v", restoreErr))
 				}
 			}
 			if cronChanged {
 				if restoreErr := restoreFile(cronPath, originalCronData); restoreErr != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": fmt.Sprintf("写入配置失败，且恢复 cron 失败: %v / %v", err, restoreErr)})
-					return
+					restoreFailures = append(restoreFailures, fmt.Sprintf("恢复 cron 失败: %v", restoreErr))
 				}
+			}
+			if len(restoreFailures) > 0 {
+				c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": fmt.Sprintf("写入配置失败: %v；%s", err, strings.Join(restoreFailures, "；"))})
+				return
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
 			return
@@ -415,25 +449,7 @@ func SaveOpenClawBindings(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 		for i, b := range req.Bindings {
-			normalizeBinding(b)
-			agent := extractBindingAgentID(b)
-			if agent == "" {
-				c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": fmt.Sprintf("bindings[%d] 缺少 agent", i)})
-				return
-			}
-			if _, ok := agentSet[agent]; !ok {
-				c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": fmt.Sprintf("bindings[%d] 指向不存在的 agent: %s", i, agent)})
-				return
-			}
-			if _, ok := b["enabled"]; !ok {
-				b["enabled"] = true
-			}
-			match, ok := b["match"].(map[string]interface{})
-			if !ok {
-				c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": fmt.Sprintf("bindings[%d] 缺少有效 match", i)})
-				return
-			}
-			if err := validateBindingMatch(i, match); err != nil {
+			if err := validateBindingForWrite(i, b, agentSet); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": err.Error()})
 				return
 			}
@@ -482,13 +498,14 @@ func PreviewOpenClawRoute(cfg *config.Config) gin.HandlerFunc {
 		}
 
 		channelDefaultAccounts := collectChannelDefaultAccounts(ocConfig)
-		resultAgent, matchedBy, trace := evaluateRoutePreview(req.Meta, getBindingsFromConfig(ocConfig, agentsCfg), defaultID, channelDefaultAccounts)
+		resultAgent, matchedBy, matchedIndex, trace := evaluateOfficialRoutePreview(req.Meta, getBindingsFromConfig(ocConfig, agentsCfg), defaultID, channelDefaultAccounts)
 		c.JSON(http.StatusOK, gin.H{
 			"ok": true,
 			"result": gin.H{
-				"agent":     resultAgent,
-				"matchedBy": matchedBy,
-				"trace":     trace,
+				"agent":        resultAgent,
+				"matchedBy":    matchedBy,
+				"matchedIndex": matchedIndex,
+				"trace":        trace,
 			},
 		})
 	}
@@ -530,18 +547,7 @@ func rewriteCronSessionTargetsForDeletedAgent(cfg *config.Config, deletedAgentID
 	}
 
 	jobs, _ := cronData["jobs"].([]interface{})
-	changed := false
-	for _, rawJob := range jobs {
-		job, ok := rawJob.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if strings.TrimSpace(toString(job["sessionTarget"])) != deletedAgentID {
-			continue
-		}
-		job["sessionTarget"] = fallbackAgentID
-		changed = true
-	}
+	changed := rewriteDeletedAgentCronJobs(jobs, deletedAgentID, fallbackAgentID)
 	if !changed {
 		return cronPath, original, nil, false, nil
 	}
@@ -551,6 +557,37 @@ func rewriteCronSessionTargetsForDeletedAgent(cfg *config.Config, deletedAgentID
 		return "", nil, nil, false, fmt.Errorf("序列化 cron jobs 失败: %w", err)
 	}
 	return cronPath, original, updated, true, nil
+}
+
+func rewriteDeletedAgentCronJobs(jobs []interface{}, deletedAgentID, fallbackAgentID string) bool {
+	changed := false
+	for _, rawJob := range jobs {
+		job, ok := rawJob.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		agentID := strings.TrimSpace(toString(job["agentId"]))
+		sessionTarget := strings.TrimSpace(toString(job["sessionTarget"]))
+		rewroteJob := false
+		if agentID == deletedAgentID {
+			job["agentId"] = fallbackAgentID
+			changed = true
+			rewroteJob = true
+		}
+		if sessionTarget == deletedAgentID {
+			if agentID == "" || agentID == deletedAgentID {
+				job["agentId"] = fallbackAgentID
+			}
+			job["sessionTarget"] = "main"
+			changed = true
+			rewroteJob = true
+		}
+		if rewroteJob && strings.TrimSpace(toString(job["sessionTarget"])) == "" {
+			job["sessionTarget"] = "main"
+			changed = true
+		}
+	}
+	return changed
 }
 
 func restoreFile(path string, content []byte) error {
@@ -564,112 +601,6 @@ func restoreFile(path string, content []byte) error {
 		return err
 	}
 	return os.WriteFile(path, content, 0644)
-}
-
-var bindingMatchAllowedKeys = []string{
-	"channel",
-	"sender",
-	"peer",
-	"parentPeer",
-	"guildId",
-	"teamId",
-	"accountId",
-	"roles",
-}
-
-var bindingMatchAllowedSet = func() map[string]struct{} {
-	out := make(map[string]struct{}, len(bindingMatchAllowedKeys))
-	for _, k := range bindingMatchAllowedKeys {
-		out[k] = struct{}{}
-	}
-	return out
-}()
-
-var bindingMatchEvalOrder = []string{
-	"channel",
-	"sender",
-	"peer",
-	"parentPeer",
-	"guildId",
-	"roles",
-	"teamId",
-	"accountId",
-}
-
-type routePreviewCandidate struct {
-	index       int
-	agent       string
-	priority    int
-	priorityKey string
-}
-
-func evaluateRoutePreview(meta map[string]interface{}, bindings []map[string]interface{}, defaultAgent string, channelDefaultAccounts map[string]string) (string, string, []string) {
-	if isLegacySingleAgentMode() {
-		return "main", "legacy-single-agent", []string{"LEGACY_SINGLE_AGENT=true", "fallback main"}
-	}
-
-	meta = applyImplicitPreviewAccount(meta, channelDefaultAccounts)
-	trace := make([]string, 0, len(bindings)*2+2)
-	candidates := make([]routePreviewCandidate, 0, len(bindings))
-	for i, rule := range bindings {
-		enabled := true
-		if v, ok := rule["enabled"].(bool); ok {
-			enabled = v
-		}
-		if !enabled {
-			trace = append(trace, fmt.Sprintf("skip bindings[%d]: disabled", i))
-			continue
-		}
-		agent := extractBindingAgentID(rule)
-		if agent == "" {
-			trace = append(trace, fmt.Sprintf("skip bindings[%d]: missing agent", i))
-			continue
-		}
-		match, _ := rule["match"].(map[string]interface{})
-		if len(match) == 0 {
-			trace = append(trace, fmt.Sprintf("skip bindings[%d]: empty match", i))
-			continue
-		}
-		if err := validateBindingMatch(i, match); err != nil {
-			trace = append(trace, fmt.Sprintf("skip bindings[%d]: invalid match (%s)", i, err.Error()))
-			continue
-		}
-		matched, reason := matchBindingRule(meta, match)
-		if !matched {
-			trace = append(trace, fmt.Sprintf("bindings[%d] %s", i, reason))
-			continue
-		}
-		if ok, reason := matchImplicitDefaultAccount(meta, match, channelDefaultAccounts); !ok {
-			trace = append(trace, fmt.Sprintf("bindings[%d] %s", i, reason))
-			continue
-		}
-		priority, priorityKey := bindingMatchPriority(match)
-		trace = append(trace, fmt.Sprintf("hit bindings[%d]: priority %s", i, priorityLabel(priorityKey)))
-		candidates = append(candidates, routePreviewCandidate{
-			index:       i,
-			agent:       agent,
-			priority:    priority,
-			priorityKey: priorityKey,
-		})
-	}
-
-	if len(candidates) > 0 {
-		sort.SliceStable(candidates, func(i, j int) bool {
-			if candidates[i].priority != candidates[j].priority {
-				return candidates[i].priority < candidates[j].priority
-			}
-			return candidates[i].index < candidates[j].index
-		})
-		best := candidates[0]
-		trace = append(trace, fmt.Sprintf("select bindings[%d]: %s", best.index, priorityLabel(best.priorityKey)))
-		return best.agent, fmt.Sprintf("bindings[%d].match.%s", best.index, best.priorityKey), trace
-	}
-
-	if strings.TrimSpace(defaultAgent) == "" {
-		defaultAgent = "main"
-	}
-	trace = append(trace, "fallback default")
-	return defaultAgent, "default", trace
 }
 
 func collectChannelDefaultAccounts(ocConfig map[string]interface{}) map[string]string {
@@ -698,28 +629,6 @@ func collectChannelDefaultAccounts(ocConfig map[string]interface{}) map[string]s
 	return result
 }
 
-func applyImplicitPreviewAccount(meta map[string]interface{}, channelDefaultAccounts map[string]string) map[string]interface{} {
-	if meta == nil {
-		return map[string]interface{}{}
-	}
-	if raw, ok := meta["accountId"]; ok {
-		if s, ok := raw.(string); !ok || strings.TrimSpace(s) != "" {
-			return meta
-		}
-	}
-	channel := strings.TrimSpace(toString(meta["channel"]))
-	if channel == "" {
-		return meta
-	}
-	defaultAccount := strings.TrimSpace(channelDefaultAccounts[channel])
-	if defaultAccount == "" {
-		return meta
-	}
-	cloned := deepCloneMap(meta)
-	cloned["accountId"] = defaultAccount
-	return cloned
-}
-
 func resolveChannelDefaultAccountID(channelCfg map[string]interface{}) string {
 	if channelCfg == nil {
 		return ""
@@ -745,400 +654,6 @@ func resolveChannelDefaultAccountID(channelCfg map[string]interface{}) string {
 		return keys[0]
 	}
 	return ""
-}
-
-func matchImplicitDefaultAccount(meta, match map[string]interface{}, channelDefaultAccounts map[string]string) (bool, string) {
-	if hasMatchField(match, "accountId") {
-		return true, ""
-	}
-	channel, ok := singleLiteralChannel(match)
-	if !ok {
-		return true, ""
-	}
-	defaultAccount := strings.TrimSpace(channelDefaultAccounts[channel])
-	if defaultAccount == "" {
-		return true, ""
-	}
-	actual, ok := readMetaForMatch(meta, "accountId")
-	if !ok {
-		return false, fmt.Sprintf("missing implicit default account (channel=%s, default=%s)", channel, defaultAccount)
-	}
-	if matchMetaValue(actual, defaultAccount) {
-		return true, ""
-	}
-	return false, fmt.Sprintf("mismatch implicit default account (channel=%s, default=%s)", channel, defaultAccount)
-}
-
-func singleLiteralChannel(match map[string]interface{}) (string, bool) {
-	raw, ok := match["channel"]
-	if !ok {
-		return "", false
-	}
-	channel, ok := raw.(string)
-	if !ok {
-		return "", false
-	}
-	channel = strings.TrimSpace(channel)
-	if channel == "" || strings.ContainsAny(channel, "*?[]") {
-		return "", false
-	}
-	return channel, true
-}
-
-func priorityLabel(key string) string {
-	switch key {
-	case "sender":
-		return "sender"
-	case "peer":
-		return "peer"
-	case "parentPeer":
-		return "parentPeer"
-	case "guildId+roles":
-		return "guildId+roles"
-	case "guildId":
-		return "guildId"
-	case "teamId":
-		return "teamId"
-	case "accountId":
-		return "accountId"
-	case "accountId:*":
-		return "accountId:*"
-	case "channel":
-		return "channel"
-	default:
-		return "generic"
-	}
-}
-
-func bindingMatchPriority(match map[string]interface{}) (int, string) {
-	if hasMatchField(match, "sender") {
-		return 1, "sender"
-	}
-	if hasMatchField(match, "peer") {
-		return 2, "peer"
-	}
-	if hasMatchField(match, "parentPeer") {
-		return 3, "parentPeer"
-	}
-	if hasMatchField(match, "guildId") && hasMatchField(match, "roles") {
-		return 4, "guildId+roles"
-	}
-	if hasMatchField(match, "guildId") {
-		return 5, "guildId"
-	}
-	if hasMatchField(match, "teamId") {
-		return 6, "teamId"
-	}
-	if hasMatchField(match, "accountId") {
-		if isWildcardMatchValue(match["accountId"]) {
-			return 8, "accountId:*"
-		}
-		return 7, "accountId"
-	}
-	if hasMatchField(match, "channel") {
-		return 9, "channel"
-	}
-	return 10, "generic"
-}
-
-func hasMatchField(match map[string]interface{}, key string) bool {
-	if match == nil {
-		return false
-	}
-	_, ok := match[key]
-	return ok
-}
-
-func isWildcardMatchValue(v interface{}) bool {
-	switch t := v.(type) {
-	case string:
-		return strings.ContainsAny(strings.TrimSpace(t), "*?[]")
-	case []interface{}:
-		for _, item := range t {
-			if isWildcardMatchValue(item) {
-				return true
-			}
-		}
-		return false
-	case []string:
-		for _, item := range t {
-			if isWildcardMatchValue(item) {
-				return true
-			}
-		}
-		return false
-	default:
-		return false
-	}
-}
-
-func matchBindingRule(meta, match map[string]interface{}) (bool, string) {
-	keys := orderedMatchKeys(match)
-	for _, key := range keys {
-		expected := match[key]
-		actual, ok := readMetaForMatch(meta, key)
-		if !ok {
-			return false, fmt.Sprintf("miss meta.%s", key)
-		}
-		if !matchBindingFieldValue(key, actual, expected) {
-			return false, fmt.Sprintf("mismatch %s", key)
-		}
-	}
-	return true, "matched"
-}
-
-func orderedMatchKeys(match map[string]interface{}) []string {
-	keys := make([]string, 0, len(match))
-	seen := map[string]struct{}{}
-	for _, key := range bindingMatchEvalOrder {
-		if _, ok := match[key]; ok {
-			keys = append(keys, key)
-			seen[key] = struct{}{}
-		}
-	}
-	extras := make([]string, 0)
-	for key := range match {
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		extras = append(extras, key)
-	}
-	sort.Strings(extras)
-	keys = append(keys, extras...)
-	return keys
-}
-
-func readMetaForMatch(meta map[string]interface{}, key string) (interface{}, bool) {
-	actual, ok := meta[key]
-	if ok {
-		return actual, true
-	}
-	// parentPeer 与 peer 允许双向兜底，适配不同 channel 的元数据格式。
-	if key == "parentPeer" {
-		actual, ok = meta["peer"]
-		return actual, ok
-	}
-	if key == "peer" {
-		actual, ok = meta["parentPeer"]
-		return actual, ok
-	}
-	return nil, false
-}
-
-func matchBindingFieldValue(field string, actual, expected interface{}) bool {
-	switch field {
-	case "peer", "parentPeer":
-		return matchPeerField(actual, expected)
-	default:
-		return matchMetaValue(actual, expected)
-	}
-}
-
-func matchPeerField(actual, expected interface{}) bool {
-	if expectedObj, ok := expected.(map[string]interface{}); ok {
-		actualPeer, ok := normalizePeerValue(actual)
-		if !ok {
-			return false
-		}
-		if kindExp, exists := expectedObj["kind"]; exists && !matchMetaValue(actualPeer["kind"], kindExp) {
-			return false
-		}
-		if idExp, exists := expectedObj["id"]; exists && !matchMetaValue(actualPeer["id"], idExp) {
-			return false
-		}
-		return true
-	}
-	return matchMetaValue(actual, expected)
-}
-
-func normalizePeerValue(v interface{}) (map[string]interface{}, bool) {
-	switch t := v.(type) {
-	case map[string]interface{}:
-		kind := strings.TrimSpace(toString(t["kind"]))
-		id := strings.TrimSpace(toString(t["id"]))
-		if kind == "" {
-			if raw := strings.TrimSpace(toString(t["raw"])); raw != "" {
-				kind, id = splitPeerKindID(raw)
-			}
-		}
-		if kind == "" {
-			if tp := strings.TrimSpace(toString(t["type"])); tp != "" {
-				kind = tp
-			}
-		}
-		if kind == "" {
-			return nil, false
-		}
-		return map[string]interface{}{"kind": kind, "id": id}, true
-	case string:
-		kind, id := splitPeerKindID(strings.TrimSpace(t))
-		if kind == "" {
-			return nil, false
-		}
-		return map[string]interface{}{"kind": kind, "id": id}, true
-	default:
-		raw := strings.TrimSpace(fmt.Sprint(v))
-		if raw == "" || raw == "<nil>" {
-			return nil, false
-		}
-		kind, id := splitPeerKindID(raw)
-		if kind == "" {
-			return nil, false
-		}
-		return map[string]interface{}{"kind": kind, "id": id}, true
-	}
-}
-
-func splitPeerKindID(raw string) (string, string) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "", ""
-	}
-	parts := strings.SplitN(raw, ":", 2)
-	if len(parts) == 2 {
-		return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
-	}
-	return strings.TrimSpace(parts[0]), ""
-}
-
-func validateBindingMatch(index int, match map[string]interface{}) error {
-	if len(match) == 0 {
-		return fmt.Errorf("bindings[%d] 缺少有效 match", index)
-	}
-	if _, ok := match["channel"]; !ok {
-		return fmt.Errorf("bindings[%d].match.channel 必填", index)
-	}
-	if _, ok := match["roles"]; ok {
-		if _, hasGuild := match["guildId"]; !hasGuild {
-			return fmt.Errorf("bindings[%d].match.roles 需与 guildId 同时使用", index)
-		}
-	}
-	for key, val := range match {
-		if _, ok := bindingMatchAllowedSet[key]; !ok {
-			return fmt.Errorf("bindings[%d].match.%s 不支持，允许字段: %s", index, key, strings.Join(bindingMatchAllowedKeys, ", "))
-		}
-		var err error
-		switch key {
-		case "peer", "parentPeer":
-			err = validatePeerMatchField(val)
-		default:
-			err = validateStringMatchField(val)
-		}
-		if err != nil {
-			return fmt.Errorf("bindings[%d].match.%s %s", index, key, err.Error())
-		}
-	}
-	return nil
-}
-
-func validateStringMatchField(v interface{}) error {
-	switch t := v.(type) {
-	case string:
-		if strings.TrimSpace(t) == "" {
-			return fmt.Errorf("不能为空字符串")
-		}
-		return nil
-	case []string:
-		if len(t) == 0 {
-			return fmt.Errorf("不能为空数组")
-		}
-		for i, item := range t {
-			if strings.TrimSpace(item) == "" {
-				return fmt.Errorf("数组项[%d] 不能为空字符串", i)
-			}
-		}
-		return nil
-	case []interface{}:
-		if len(t) == 0 {
-			return fmt.Errorf("不能为空数组")
-		}
-		for i, item := range t {
-			s, ok := item.(string)
-			if !ok {
-				return fmt.Errorf("数组项[%d] 仅支持字符串", i)
-			}
-			if strings.TrimSpace(s) == "" {
-				return fmt.Errorf("数组项[%d] 不能为空字符串", i)
-			}
-		}
-		return nil
-	default:
-		return fmt.Errorf("仅支持字符串或字符串数组")
-	}
-}
-
-func validatePeerMatchField(v interface{}) error {
-	if err := validateStringMatchField(v); err == nil {
-		return nil
-	}
-	obj, ok := v.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("仅支持字符串、字符串数组或对象")
-	}
-	for key := range obj {
-		if key != "kind" && key != "id" {
-			return fmt.Errorf("对象仅允许 kind/id 字段")
-		}
-	}
-	kindRaw, ok := obj["kind"]
-	if !ok {
-		return fmt.Errorf("对象模式缺少 kind")
-	}
-	if err := validateStringMatchField(kindRaw); err != nil {
-		return fmt.Errorf("kind %s", err.Error())
-	}
-	if idRaw, ok := obj["id"]; ok {
-		if err := validateStringMatchField(idRaw); err != nil {
-			return fmt.Errorf("id %s", err.Error())
-		}
-	}
-	return nil
-}
-
-func matchMetaValue(actual, expected interface{}) bool {
-	// roles 语义：任一角色命中即视为匹配
-	if expectedRoles, ok := expected.([]interface{}); ok {
-		if actualRoles := stringSliceFromAny(actual); len(actualRoles) > 0 {
-			exp := stringSliceFromAny(expectedRoles)
-			for _, av := range actualRoles {
-				for _, ev := range exp {
-					if matchMetaValue(av, ev) {
-						return true
-					}
-				}
-			}
-			return false
-		}
-	}
-
-	if actualArr := anySlice(actual); len(actualArr) > 0 {
-		for _, item := range actualArr {
-			if matchMetaValue(item, expected) {
-				return true
-			}
-		}
-		return false
-	}
-
-	switch e := expected.(type) {
-	case []interface{}:
-		for _, item := range e {
-			if matchMetaValue(actual, item) {
-				return true
-			}
-		}
-		return false
-	case string:
-		actualStr := strings.TrimSpace(fmt.Sprint(actual))
-		expectedStr := strings.TrimSpace(e)
-		if strings.ContainsAny(expectedStr, "*?[]") {
-			ok, err := path.Match(expectedStr, actualStr)
-			return err == nil && ok
-		}
-		return actualStr == expectedStr
-	default:
-		return fmt.Sprint(actual) == fmt.Sprint(expected)
-	}
 }
 
 func ensureAgentsConfig(ocConfig map[string]interface{}) map[string]interface{} {
@@ -1199,8 +714,7 @@ func setBindingsToConfig(ocConfig, agentsCfg map[string]interface{}, bindings []
 	normalized := make([]map[string]interface{}, 0, len(bindings))
 	for _, b := range bindings {
 		cp := deepCloneMap(b)
-		normalizeBinding(cp)
-		normalized = append(normalized, cp)
+		normalized = append(normalized, normalizeBindingForWrite(cp))
 	}
 	if ocConfig != nil {
 		ocConfig["bindings"] = mapSliceToAny(normalized)
@@ -1212,17 +726,7 @@ func setBindingsToConfig(ocConfig, agentsCfg map[string]interface{}, bindings []
 }
 
 func normalizeBinding(binding map[string]interface{}) {
-	if binding == nil {
-		return
-	}
-	agentID := strings.TrimSpace(toString(binding["agentId"]))
-	if agentID == "" {
-		agentID = strings.TrimSpace(toString(binding["agent"]))
-	}
-	if agentID != "" {
-		binding["agentId"] = agentID
-		binding["agent"] = agentID
-	}
+	normalizeBindingTopLevel(binding)
 }
 
 func extractBindingAgentID(binding map[string]interface{}) string {
@@ -1234,20 +738,6 @@ func extractBindingAgentID(binding map[string]interface{}) string {
 		return agentID
 	}
 	return strings.TrimSpace(toString(binding["agent"]))
-}
-
-func anySlice(v interface{}) []interface{} {
-	if arr, ok := v.([]interface{}); ok {
-		return arr
-	}
-	if arr, ok := v.([]string); ok {
-		out := make([]interface{}, 0, len(arr))
-		for _, s := range arr {
-			out = append(out, s)
-		}
-		return out
-	}
-	return nil
 }
 
 func stringSliceFromAny(v interface{}) []string {

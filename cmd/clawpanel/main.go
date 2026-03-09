@@ -208,6 +208,7 @@ func runServer(stopCh chan struct{}) {
 			auth.DELETE("/openclaw/agents/:id", handler.DeleteOpenClawAgent(cfg))
 			auth.GET("/openclaw/agents/:id/core-files", handler.GetOpenClawAgentCoreFiles(cfg))
 			auth.PUT("/openclaw/agents/:id/core-files", handler.SaveOpenClawAgentCoreFile(cfg))
+			auth.GET("/openclaw/agents/:id/identity/avatar", handler.GetOpenClawAgentIdentityAvatar(cfg))
 			auth.GET("/openclaw/bindings", handler.GetOpenClawBindings(cfg))
 			auth.PUT("/openclaw/bindings", handler.SaveOpenClawBindings(cfg))
 			auth.POST("/openclaw/route/preview", handler.PreviewOpenClawRoute(cfg))

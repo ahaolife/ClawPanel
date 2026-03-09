@@ -80,7 +80,7 @@ func GetIdentityDocs(cfg *config.Config) gin.HandlerFunc {
 			workDir = filepath.Join(filepath.Dir(cfg.OpenClawDir), "work")
 		}
 
-		identityFiles := []string{"AGENTS.md", "BOOTSTRAP.md", "HEARTBEAT.md", "IDENTITY.md", "SOUL.md", "TOOLS.md", "USER.md"}
+		identityFiles := []string{"AGENTS.md", "BOOT.md", "BOOTSTRAP.md", "HEARTBEAT.md", "IDENTITY.md", "MEMORY.md", "SOUL.md", "TOOLS.md", "USER.md"}
 		var docs []gin.H
 
 		for _, name := range identityFiles {

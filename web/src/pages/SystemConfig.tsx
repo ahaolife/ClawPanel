@@ -6,7 +6,7 @@ import {
   Brain, MessageSquare, Globe, Terminal, Webhook,
   Users, Eye, EyeOff, Key, Plus, Trash2,
   Monitor, HardDrive, FileText, Archive, RotateCcw,
-  CheckCircle, AlertTriangle, Package, Box, Shield, Command
+  CheckCircle, AlertTriangle, Package, Box, Shield, Command, Search
 } from 'lucide-react';
 import { useI18n } from '../i18n';
 
@@ -169,6 +169,25 @@ const TOOL_GOVERNANCE_PRESETS: Record<ToolProfilePreset, { label: string; help: 
   },
 };
 
+type SessionVisibility = '' | 'self' | 'tree' | 'agent' | 'all';
+
+function normalizeSessionVisibility(raw: any): SessionVisibility {
+  const value = String(raw || '').trim();
+  switch (value) {
+    case 'same-agent':
+      return 'agent';
+    case 'all-agents':
+      return 'all';
+    case 'self':
+    case 'tree':
+    case 'agent':
+    case 'all':
+      return value;
+    default:
+      return '';
+  }
+}
+
 export default function SystemConfig() {
   const { t: i18n } = useI18n();
   const { uiMode } = (useOutletContext() as { uiMode?: 'modern' }) || {};
@@ -310,7 +329,11 @@ export default function SystemConfig() {
     if (tab === 'health') loadConfigCheck();
   }, [tab]);
 
-  const getVal = (path: string): any => path.split('.').reduce((o: any, k: string) => o?.[k], config);
+  const getVal = (path: string): any => {
+    const value = path.split('.').reduce((o: any, k: string) => o?.[k], config);
+    if (path === 'tools.sessions.visibility') return normalizeSessionVisibility(value);
+    return value;
+  };
   const syncAllowedModels = (draft: any) => {
     const current = draft?.agents?.defaults?.models;
     if (!current || typeof current !== 'object' || Array.isArray(current)) return;
@@ -338,6 +361,9 @@ export default function SystemConfig() {
     });
   };
   const setVal = (path: string, value: any) => {
+    if (path === 'tools.sessions.visibility') {
+      value = normalizeSessionVisibility(value);
+    }
     updateConfig((clone: any) => {
       const keys = path.split('.');
       let cur = clone;
@@ -880,6 +906,30 @@ export default function SystemConfig() {
                   },
                   { path: 'agents.defaults.maxConcurrent', label: '最大并发', type: 'number' as const, placeholder: '4', integer: true, min: 1 },
                   {
+                    path: 'agents.defaults.skipBootstrap',
+                    label: '跳过 Bootstrap 文件',
+                    type: 'toggle' as const,
+                    help: '对应官方 agents.defaults.skipBootstrap；开启后不会自动补齐 BOOTSTRAP.md 等引导文件。',
+                  },
+                  {
+                    path: 'agents.defaults.bootstrapMaxChars',
+                    label: '单文件 Bootstrap 上限',
+                    type: 'number' as const,
+                    placeholder: '20000',
+                    help: '对应 agents.defaults.bootstrapMaxChars，用于限制单个核心文件注入上下文的最大字符数。',
+                    integer: true,
+                    min: 1,
+                  },
+                  {
+                    path: 'agents.defaults.bootstrapTotalMaxChars',
+                    label: '总 Bootstrap 上限',
+                    type: 'number' as const,
+                    placeholder: '150000',
+                    help: '对应 agents.defaults.bootstrapTotalMaxChars，用于限制全部 bootstrap 文件总注入量。',
+                    integer: true,
+                    min: 1,
+                  },
+                  {
                     path: 'agents.defaults.compaction.mode',
                     label: '压缩模式',
                     type: 'select' as const,
@@ -987,9 +1037,40 @@ export default function SystemConfig() {
           <CfgSection title="多智能体协同" icon={Users} fields={[
             { path: 'tools.agentToAgent.enabled', label: '启用 Agent 间委托', type: 'toggle' as const },
             { path: 'session.agentToAgent.maxPingPongTurns', label: '最大来回委托轮次', type: 'number' as const, placeholder: '4', integer: true, min: 1 },
-            { path: 'tools.sessions.visibility', label: '会话可见性', type: 'select' as const, options: ['same-agent', 'all-agents'] },
+            { path: 'tools.sessions.visibility', label: '会话可见性', type: 'select' as const, options: ['self', 'tree', 'agent', 'all'], help: '官方枚举：self=仅当前会话，tree=当前会话及其子会话，agent=当前 Agent 的全部会话，all=全部会话。' },
             { path: 'session.dmScope', label: '私聊隔离范围', type: 'select' as const, options: ['main', 'per-peer', 'per-channel-peer', 'per-account-channel-peer'] },
           ]} getVal={getVal} setVal={setVal} />
+          <CfgSection title="Web 搜索工具" icon={Search} description="tools.web.search — 控制联网搜索行为" fields={[
+            { path: 'tools.web.search.provider', label: '搜索提供商', type: 'select' as const, options: ['brave', 'perplexity', 'grok', 'gemini', 'kimi'], help: '当前 OpenClaw 官方支持 brave / perplexity / grok / gemini / kimi。' },
+            { path: 'tools.web.search.apiKey', label: 'API Key', type: 'password' as const, help: '搜索服务的密钥，优先于 env.vars 中的同名变量。' },
+            { path: 'tools.web.search.maxResults', label: '最大结果数', type: 'number' as const, placeholder: '5', integer: true, min: 1, max: 10, help: '单次搜索返回的最多条目数（官方范围 1-10，默认 5）。' },
+          ]} getVal={getVal} setVal={setVal} />
+          <CfgSection title="命令执行安全 (tools.exec)" icon={Terminal} description="tools.exec — 控制 exec/shell 工具的安全边界" fields={[
+            { path: 'tools.exec.timeoutSec', label: '超时（秒）', type: 'number' as const, placeholder: '30', integer: true, min: 1, help: '单次命令最大执行时长，超时后进程会被强制终止。' },
+            { path: 'tools.exec.security', label: '安全模式', type: 'select' as const, options: ['deny', 'allowlist', 'full'], help: 'deny = 默认拒绝；allowlist = 仅 safeBins 白名单；full = 完全放开（高风险）。' },
+            { path: 'tools.exec.ask', label: '审批模式', type: 'select' as const, options: ['off', 'on-miss', 'always'], help: 'off = 不额外审批；on-miss = 未命中白名单时审批；always = 总是审批。' },
+          ]} getVal={getVal} setVal={setVal} />
+          <div className="page-modern-panel p-5 space-y-2">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-gray-900 dark:text-white">命令白名单（tools.exec.safeBins）</h3>
+              <code className="text-[9px] text-gray-400 font-mono bg-gray-50 dark:bg-gray-900 px-1.5 py-0.5 rounded border border-gray-100 dark:border-gray-800">tools.exec.safeBins</code>
+            </div>
+            <input
+              value={(() => {
+                const raw = getVal('tools.exec.safeBins');
+                if (Array.isArray(raw)) return raw.join(', ');
+                if (typeof raw === 'string') return raw;
+                return '';
+              })()}
+              onChange={e => {
+                const list = parseConfigListInput(e.target.value);
+                setVal('tools.exec.safeBins', list.length > 0 ? list : undefined);
+              }}
+              placeholder="例如: ls, cat, echo, grep, git"
+              className="w-full px-3.5 py-2.5 text-xs border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-mono"
+            />
+            <p className="text-[11px] text-gray-500">逗号分隔；security=allowlist 时 Agent 只能调用列表内的可执行文件。保存时写为数组。</p>
+          </div>
           <SessionIsolationSection config={config} updateConfig={updateConfig} />
           <BrowserControlSection config={config} updateConfig={updateConfig} />
           <ToolGovernanceSection config={config} updateConfig={updateConfig} />

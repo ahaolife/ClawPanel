@@ -1,11 +1,13 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -361,11 +363,181 @@ func (c *Config) WriteOpenClawJSON(data map[string]interface{}) error {
 	}
 	// 兼容清洗：避免写入新版 OpenClaw 不接受的 legacy 字段。
 	NormalizeOpenClawConfigForWrite(data, c.OpenClawDir)
-	jsonData, err := json.MarshalIndent(data, "", "  ")
+	jsonData, err := marshalOpenClawJSON(data)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(cfgPath, jsonData, 0644)
+}
+
+type openClawJSONOrderContext struct {
+	feishuDefaultAccount string
+}
+
+func marshalOpenClawJSON(data map[string]interface{}) ([]byte, error) {
+	var buf bytes.Buffer
+	ctx := openClawJSONOrderContext{}
+	if channels, ok := data["channels"].(map[string]interface{}); ok && channels != nil {
+		if feishu, ok := channels["feishu"].(map[string]interface{}); ok && feishu != nil {
+			ctx.feishuDefaultAccount = strings.TrimSpace(stringValue(feishu["defaultAccount"]))
+		}
+	}
+	if err := writeOrderedJSONValue(&buf, data, 0, nil, ctx); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func writeOrderedJSONValue(buf *bytes.Buffer, value interface{}, depth int, path []string, ctx openClawJSONOrderContext) error {
+	if value == nil {
+		buf.WriteString("null")
+		return nil
+	}
+
+	rv := reflect.ValueOf(value)
+	for rv.IsValid() && (rv.Kind() == reflect.Interface || rv.Kind() == reflect.Pointer) {
+		if rv.IsNil() {
+			buf.WriteString("null")
+			return nil
+		}
+		rv = rv.Elem()
+		value = rv.Interface()
+	}
+	if !rv.IsValid() {
+		buf.WriteString("null")
+		return nil
+	}
+
+	switch rv.Kind() {
+	case reflect.Map:
+		if rv.Type().Key().Kind() != reflect.String {
+			break
+		}
+		obj := make(map[string]interface{}, rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			key := iter.Key().String()
+			mapValue := iter.Value()
+			if mapValue.IsValid() {
+				obj[key] = mapValue.Interface()
+			} else {
+				obj[key] = nil
+			}
+		}
+		return writeOrderedJSONObject(buf, obj, depth, path, ctx)
+	case reflect.Slice, reflect.Array:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			break
+		}
+		items := make([]interface{}, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			items[i] = rv.Index(i).Interface()
+		}
+		return writeOrderedJSONArray(buf, items, depth, path, ctx)
+	}
+
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	buf.Write(raw)
+	return nil
+}
+
+func writeOrderedJSONObject(buf *bytes.Buffer, obj map[string]interface{}, depth int, path []string, ctx openClawJSONOrderContext) error {
+	if len(obj) == 0 {
+		buf.WriteString("{}")
+		return nil
+	}
+
+	keys := make([]string, 0, len(obj))
+	for key := range obj {
+		keys = append(keys, key)
+	}
+	keys = orderedJSONMapKeys(keys, path, ctx)
+
+	buf.WriteString("{\n")
+	for i, key := range keys {
+		writeJSONIndent(buf, depth+1)
+		keyRaw, err := json.Marshal(key)
+		if err != nil {
+			return err
+		}
+		buf.Write(keyRaw)
+		buf.WriteString(": ")
+		if err := writeOrderedJSONValue(buf, obj[key], depth+1, append(path, key), ctx); err != nil {
+			return err
+		}
+		if i < len(keys)-1 {
+			buf.WriteByte(',')
+		}
+		buf.WriteByte('\n')
+	}
+	writeJSONIndent(buf, depth)
+	buf.WriteByte('}')
+	return nil
+}
+
+func writeOrderedJSONArray(buf *bytes.Buffer, items []interface{}, depth int, path []string, ctx openClawJSONOrderContext) error {
+	if len(items) == 0 {
+		buf.WriteString("[]")
+		return nil
+	}
+
+	buf.WriteString("[\n")
+	for i, item := range items {
+		writeJSONIndent(buf, depth+1)
+		if err := writeOrderedJSONValue(buf, item, depth+1, path, ctx); err != nil {
+			return err
+		}
+		if i < len(items)-1 {
+			buf.WriteByte(',')
+		}
+		buf.WriteByte('\n')
+	}
+	writeJSONIndent(buf, depth)
+	buf.WriteByte(']')
+	return nil
+}
+
+func orderedJSONMapKeys(keys []string, path []string, ctx openClawJSONOrderContext) []string {
+	ordered := append([]string(nil), keys...)
+	sort.Strings(ordered)
+
+	if !isFeishuAccountsPath(path) || ctx.feishuDefaultAccount == "" {
+		return ordered
+	}
+
+	found := false
+	for _, key := range ordered {
+		if key == ctx.feishuDefaultAccount {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return ordered
+	}
+
+	reordered := make([]string, 0, len(ordered))
+	reordered = append(reordered, ctx.feishuDefaultAccount)
+	for _, key := range ordered {
+		if key == ctx.feishuDefaultAccount {
+			continue
+		}
+		reordered = append(reordered, key)
+	}
+	return reordered
+}
+
+func isFeishuAccountsPath(path []string) bool {
+	return len(path) == 3 && path[0] == "channels" && path[1] == "feishu" && path[2] == "accounts"
+}
+
+func writeJSONIndent(buf *bytes.Buffer, depth int) {
+	for i := 0; i < depth; i++ {
+		buf.WriteString("  ")
+	}
 }
 
 func backupOpenClawBeforeWrite(cfgPath, backupDir string) error {

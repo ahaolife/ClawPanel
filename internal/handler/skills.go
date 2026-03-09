@@ -83,7 +83,7 @@ func GetSkills(cfg *config.Config) gin.HandlerFunc {
 		})
 
 		roots := resolveSkillDiscoveryRoots(cfg, ocConfig, plugins, agentID)
-		skills := discoverSkills(roots, skillEntries, legacyBlocklist)
+		skills := discoverSkills(roots, skillEntries, legacyBlocklist, resolveBundledSkillAllowlist(ocConfig))
 
 		c.JSON(http.StatusOK, gin.H{
 			"ok":        true,
@@ -170,6 +170,12 @@ func SaveCronJobs(cfg *config.Config) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": err.Error()})
 			return
 		}
+		openClawPath := filepath.Join(cfg.OpenClawDir, "openclaw.json")
+		originalOpenClawJSON, err := os.ReadFile(openClawPath)
+		if err != nil && !os.IsNotExist(err) {
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
+			return
+		}
 		oc, _ := cfg.ReadOpenClawJSON()
 		if oc == nil {
 			oc = map[string]interface{}{}
@@ -185,8 +191,10 @@ func SaveCronJobs(cfg *config.Config) gin.HandlerFunc {
 			for k, v := range job {
 				copyJob[k] = v
 			}
-			if strings.TrimSpace(fmt.Sprint(copyJob["sessionTarget"])) == "" {
-				copyJob["sessionTarget"] = loadDefaultAgentID(cfg)
+			// Normalise missing/empty sessionTarget to the official default ("main").
+			existingTarget, _ := copyJob["sessionTarget"].(string)
+			if strings.TrimSpace(existingTarget) == "" {
+				copyJob["sessionTarget"] = "main"
 			}
 			list = append(list, copyJob)
 		}
@@ -197,6 +205,10 @@ func SaveCronJobs(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 		if err := writeCronJobsFile(cfg, list); err != nil {
+			if restoreErr := restoreFile(openClawPath, originalOpenClawJSON); restoreErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error() + "; 回滚 openclaw.json 失败: " + restoreErr.Error()})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
 			return
 		}
@@ -396,8 +408,18 @@ func resolveSkillDiscoveryRoots(cfg *config.Config, ocConfig map[string]interfac
 		roots = append(roots, skillDiscoveryRoot{Dir: dir, Source: "extra-dir"})
 	}
 	roots = append(roots, resolvePluginSkillDirs(baseDir, plugins)...)
-	bundled := filepath.Join(resolveBundledSkillsBase(cfg), "skills")
-	roots = append(roots, skillDiscoveryRoot{Dir: bundled, Source: "app-skill"})
+
+	// Respect skills.allowBundled: false — skip bundled root when explicitly disabled.
+	allowBundled := true
+	skillsCfg := asMapAny(ocConfig["skills"])
+	if v, ok := skillsCfg["allowBundled"].(bool); ok {
+		allowBundled = v
+	}
+	if allowBundled {
+		bundled := filepath.Join(resolveBundledSkillsBase(cfg), "skills")
+		roots = append(roots, skillDiscoveryRoot{Dir: bundled, Source: "app-skill"})
+	}
+
 	managed := filepath.Join(cfg.OpenClawDir, "skills")
 	roots = append(roots, skillDiscoveryRoot{Dir: managed, Source: "managed"})
 	globalAgent := expandSkillPath(baseDir, "~/.agents/skills")
@@ -511,7 +533,26 @@ func resolvePluginSkillDirs(baseDir string, plugins []pluginInfo) []skillDiscove
 	return roots
 }
 
-func discoverSkills(roots []skillDiscoveryRoot, skillEntries map[string]interface{}, legacyBlocklist map[string]bool) []skillInfo {
+func resolveBundledSkillAllowlist(ocConfig map[string]interface{}) map[string]struct{} {
+	allowlist := asStringSlice(asMapAny(ocConfig["skills"])["allowBundled"])
+	if len(allowlist) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(allowlist))
+	for _, item := range allowlist {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		set[item] = struct{}{}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return set
+}
+
+func discoverSkills(roots []skillDiscoveryRoot, skillEntries map[string]interface{}, legacyBlocklist map[string]bool, bundledAllowlist map[string]struct{}) []skillInfo {
 	skills := make([]skillInfo, 0)
 	positions := map[string]int{}
 	seenRoots := map[string]bool{}
@@ -525,6 +566,20 @@ func discoverSkills(roots []skillDiscoveryRoot, skillEntries map[string]interfac
 		}
 		seenRoots[resolved] = true
 		scanSkillRoot(resolved, root.Source, &skills, positions, skillEntries, legacyBlocklist)
+	}
+	if len(bundledAllowlist) > 0 {
+		filtered := make([]skillInfo, 0, len(skills))
+		for _, skill := range skills {
+			if skill.Source == "app-skill" {
+				if _, ok := bundledAllowlist[skill.SkillKey]; !ok {
+					if _, ok := bundledAllowlist[skill.Name]; !ok {
+						continue
+					}
+				}
+			}
+			filtered = append(filtered, skill)
+		}
+		skills = filtered
 	}
 	sort.Slice(skills, func(i, j int) bool {
 		left := strings.ToLower(skills[i].Name)
@@ -542,6 +597,12 @@ func scanSkillRoot(root, source string, skills *[]skillInfo, positions map[strin
 	if err != nil || !info.IsDir() {
 		return
 	}
+	// Resolve the canonical real path of the root once so the recursive scanner
+	// can guard every child against symlink-based path escapes.
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		realRoot = filepath.Clean(root)
+	}
 	count := 0
 	if _, err := os.Stat(filepath.Join(root, "SKILL.md")); err == nil {
 		if skill, ok := parseSkillInfo(root, source, skillEntries, legacyBlocklist); ok {
@@ -552,10 +613,10 @@ func scanSkillRoot(root, source string, skills *[]skillInfo, positions map[strin
 	if count >= maxSkillsPerRoot {
 		return
 	}
-	scanSkillDirRecursive(root, source, 0, &count, skills, positions, skillEntries, legacyBlocklist)
+	scanSkillDirRecursive(root, realRoot, source, 0, &count, skills, positions, skillEntries, legacyBlocklist)
 }
 
-func scanSkillDirRecursive(dir, source string, depth int, count *int, skills *[]skillInfo, positions map[string]int, skillEntries map[string]interface{}, legacyBlocklist map[string]bool) {
+func scanSkillDirRecursive(dir, realRoot, source string, depth int, count *int, skills *[]skillInfo, positions map[string]int, skillEntries map[string]interface{}, legacyBlocklist map[string]bool) {
 	if depth >= maxSkillScanDepth || *count >= maxSkillsPerRoot {
 		return
 	}
@@ -580,6 +641,17 @@ func scanSkillDirRecursive(dir, source string, depth int, count *int, skills *[]
 			return
 		}
 		child := filepath.Join(dir, name)
+		// Symlink escape guard: resolve child to its real path and ensure it
+		// remains within the declared scan root. This prevents a crafted
+		// symlink from traversing outside the intended directory tree.
+		realChild, err := filepath.EvalSymlinks(child)
+		if err != nil {
+			continue // broken or inaccessible symlink – skip
+		}
+		rel, err := filepath.Rel(realRoot, realChild)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			continue // resolved path escapes the declared scan root – skip
+		}
 		if _, err := os.Stat(filepath.Join(child, "SKILL.md")); err == nil {
 			if skill, ok := parseSkillInfo(child, source, skillEntries, legacyBlocklist); ok {
 				upsertSkill(skills, positions, skill)
@@ -587,7 +659,7 @@ func scanSkillDirRecursive(dir, source string, depth int, count *int, skills *[]
 			}
 			continue
 		}
-		scanSkillDirRecursive(child, source, depth+1, count, skills, positions, skillEntries, legacyBlocklist)
+		scanSkillDirRecursive(child, realRoot, source, depth+1, count, skills, positions, skillEntries, legacyBlocklist)
 	}
 }
 
@@ -790,27 +862,92 @@ func validateCronJobsSessionTargets(cfg *config.Config, jobs []map[string]interf
 		agentSet = map[string]struct{}{"main": {}}
 	}
 	for _, job := range jobs {
-		target := strings.TrimSpace(fmt.Sprint(job["sessionTarget"]))
+		if rawAgentID, exists := job["agentId"]; exists {
+			switch v := rawAgentID.(type) {
+			case nil:
+				delete(job, "agentId")
+			case string:
+				agentID := strings.TrimSpace(v)
+				if agentID == "" {
+					delete(job, "agentId")
+				} else {
+					if _, ok := agentSet[agentID]; !ok {
+						return fmt.Errorf("agentId %q 不存在于当前 Agent 列表", agentID)
+					}
+					job["agentId"] = agentID
+				}
+			default:
+				return fmt.Errorf("agentId 必须是字符串")
+			}
+		}
+		// Use type assertion to safely handle nil (missing key) and non-string values.
+		target, _ := job["sessionTarget"].(string)
+		target = strings.TrimSpace(target)
 		if target == "" {
 			continue
 		}
-		if _, ok := agentSet[target]; !ok {
-			return fmt.Errorf("sessionTarget %q 不存在于当前 Agent 列表", target)
+		// Official semantics: sessionTarget is an execution mode ("main" or "isolated"),
+		// not an agent ID. Accept the two official values unconditionally.
+		if target == "main" || target == "isolated" {
+			continue
 		}
+		// Backward-compat: if the value is a known agent ID (legacy behaviour), migrate it
+		// into agentId and normalise sessionTarget to the official default ("main").
+		if _, isAgent := agentSet[target]; isAgent {
+			if _, hasAgentID := job["agentId"]; !hasAgentID {
+				job["agentId"] = target
+			}
+			job["sessionTarget"] = "main"
+			continue
+		}
+		return fmt.Errorf("sessionTarget %q 无效，有效值为 \"main\" 或 \"isolated\"", target)
+	}
+	return nil
+}
+
+func replaceFileAtomically(dest string, raw []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		return err
+	}
+	tmp := dest + ".tmp"
+	if err := os.WriteFile(tmp, raw, mode); err != nil {
+		return err
+	}
+	backup := dest + ".bak"
+	_ = os.Remove(backup)
+	hadDest := false
+	if _, err := os.Stat(dest); err == nil {
+		hadDest = true
+		if err := os.Rename(dest, backup); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		_ = os.Remove(tmp)
+		if hadDest {
+			_ = os.Rename(backup, dest)
+		}
+		return err
+	}
+	if hadDest {
+		_ = os.Remove(backup)
 	}
 	return nil
 }
 
 func writeCronJobsFile(cfg *config.Config, jobs []interface{}) error {
-	cronDir := filepath.Join(cfg.OpenClawDir, "cron")
-	if err := os.MkdirAll(cronDir, 0755); err != nil {
-		return err
-	}
 	raw, err := json.MarshalIndent(map[string]interface{}{"jobs": jobs}, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(cronDir, "jobs.json"), raw, 0644)
+	// Atomic write: write to a temp file then rename so a mid-write crash cannot
+	// leave a partially-written jobs.json (mirrors openclaw store.ts behaviour).
+	dest := filepath.Join(cfg.OpenClawDir, "cron", "jobs.json")
+	return replaceFileAtomically(dest, raw, 0644)
 }
 
 func expandSkillPath(baseDir, raw string) string {
