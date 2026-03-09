@@ -1537,6 +1537,16 @@ func TestDeleteOpenClawAgentRewritesCronTargets(t *testing.T) {
 			"list": []interface{}{
 				map[string]interface{}{"id": "main", "default": true},
 				map[string]interface{}{"id": "work"},
+				map[string]interface{}{"id": "audit"},
+			},
+		},
+		"cron": map[string]interface{}{
+			"jobs": []interface{}{
+				map[string]interface{}{"id": "cfg_job_1", "sessionTarget": "work"},
+				map[string]interface{}{"id": "cfg_job_2", "agentId": "work", "sessionTarget": "main"},
+				map[string]interface{}{"id": "cfg_job_3", "agentId": "work", "sessionTarget": "work"},
+				map[string]interface{}{"id": "cfg_job_4", "agentId": "audit", "sessionTarget": "work"},
+				map[string]interface{}{"id": "cfg_job_5", "agentId": "work"},
 			},
 		},
 	})
@@ -1545,6 +1555,10 @@ func TestDeleteOpenClawAgentRewritesCronTargets(t *testing.T) {
 		"jobs": []interface{}{
 			map[string]interface{}{"id": "job_1", "sessionTarget": "work"},
 			map[string]interface{}{"id": "job_2", "sessionTarget": "main"},
+			map[string]interface{}{"id": "job_3", "agentId": "work", "sessionTarget": "main"},
+			map[string]interface{}{"id": "job_4", "agentId": "work", "sessionTarget": "work"},
+			map[string]interface{}{"id": "job_5", "agentId": "audit", "sessionTarget": "work"},
+			map[string]interface{}{"id": "job_6", "agentId": "work"},
 		},
 	})
 
@@ -1567,12 +1581,135 @@ func TestDeleteOpenClawAgentRewritesCronTargets(t *testing.T) {
 		t.Fatalf("decode cron jobs: %v", err)
 	}
 	jobs, _ := saved["jobs"].([]interface{})
-	if len(jobs) != 2 {
-		t.Fatalf("expected two jobs, got %d", len(jobs))
+	if len(jobs) != 6 {
+		t.Fatalf("expected six jobs, got %d", len(jobs))
 	}
 	job1, _ := jobs[0].(map[string]interface{})
 	if got := strings.TrimSpace(getString(job1, "sessionTarget")); got != "main" {
-		t.Fatalf("expected deleted agent target to fallback to main, got %q", got)
+		t.Fatalf("expected legacy deleted agent target to normalize to main session, got %q", got)
+	}
+	if got := strings.TrimSpace(getString(job1, "agentId")); got != "main" {
+		t.Fatalf("expected legacy deleted agent target to fallback agentId to main, got %q", got)
+	}
+	job3, _ := jobs[2].(map[string]interface{})
+	if got := strings.TrimSpace(getString(job3, "agentId")); got != "main" {
+		t.Fatalf("expected deleted agentId to fallback to main, got %q", got)
+	}
+	job4, _ := jobs[3].(map[string]interface{})
+	if got := strings.TrimSpace(getString(job4, "agentId")); got != "main" {
+		t.Fatalf("expected mixed legacy job agentId to fallback to main, got %q", got)
+	}
+	if got := strings.TrimSpace(getString(job4, "sessionTarget")); got != "main" {
+		t.Fatalf("expected mixed legacy job sessionTarget to normalize to main, got %q", got)
+	}
+	job5, _ := jobs[4].(map[string]interface{})
+	if got := strings.TrimSpace(getString(job5, "agentId")); got != "audit" {
+		t.Fatalf("expected non-deleted agentId to stay audit, got %q", got)
+	}
+	if got := strings.TrimSpace(getString(job5, "sessionTarget")); got != "main" {
+		t.Fatalf("expected legacy sessionTarget on audit job to normalize to main, got %q", got)
+	}
+	job6, _ := jobs[5].(map[string]interface{})
+	if got := strings.TrimSpace(getString(job6, "agentId")); got != "main" {
+		t.Fatalf("expected blank-target deleted agent job to fallback to main, got %q", got)
+	}
+	if got := strings.TrimSpace(getString(job6, "sessionTarget")); got != "main" {
+		t.Fatalf("expected blank-target deleted agent job to normalize sessionTarget to main, got %q", got)
+	}
+	savedCfg, err := cfg.ReadOpenClawJSON()
+	if err != nil {
+		t.Fatalf("read openclaw.json: %v", err)
+	}
+	cronCfg, _ := savedCfg["cron"].(map[string]interface{})
+	cfgJobs, _ := cronCfg["jobs"].([]interface{})
+	if len(cfgJobs) != 5 {
+		t.Fatalf("expected five config cron jobs, got %d", len(cfgJobs))
+	}
+	cfgJob1, _ := cfgJobs[0].(map[string]interface{})
+	if got := strings.TrimSpace(getString(cfgJob1, "agentId")); got != "main" {
+		t.Fatalf("expected openclaw.json legacy cron job to fallback agentId to main, got %q", got)
+	}
+	if got := strings.TrimSpace(getString(cfgJob1, "sessionTarget")); got != "main" {
+		t.Fatalf("expected openclaw.json legacy cron job to normalize sessionTarget to main, got %q", got)
+	}
+	cfgJob2, _ := cfgJobs[1].(map[string]interface{})
+	if got := strings.TrimSpace(getString(cfgJob2, "agentId")); got != "main" {
+		t.Fatalf("expected openclaw.json agentId cron job to fallback to main, got %q", got)
+	}
+	cfgJob3, _ := cfgJobs[2].(map[string]interface{})
+	if got := strings.TrimSpace(getString(cfgJob3, "agentId")); got != "main" {
+		t.Fatalf("expected openclaw.json mixed legacy job agentId to fallback to main, got %q", got)
+	}
+	if got := strings.TrimSpace(getString(cfgJob3, "sessionTarget")); got != "main" {
+		t.Fatalf("expected openclaw.json mixed legacy job sessionTarget to normalize to main, got %q", got)
+	}
+	cfgJob4, _ := cfgJobs[3].(map[string]interface{})
+	if got := strings.TrimSpace(getString(cfgJob4, "agentId")); got != "audit" {
+		t.Fatalf("expected openclaw.json non-deleted agentId to stay audit, got %q", got)
+	}
+	if got := strings.TrimSpace(getString(cfgJob4, "sessionTarget")); got != "main" {
+		t.Fatalf("expected openclaw.json legacy sessionTarget on audit job to normalize to main, got %q", got)
+	}
+	cfgJob5, _ := cfgJobs[4].(map[string]interface{})
+	if got := strings.TrimSpace(getString(cfgJob5, "agentId")); got != "main" {
+		t.Fatalf("expected openclaw.json blank-target deleted agent job to fallback to main, got %q", got)
+	}
+	if got := strings.TrimSpace(getString(cfgJob5, "sessionTarget")); got != "main" {
+		t.Fatalf("expected openclaw.json blank-target deleted agent job to normalize sessionTarget to main, got %q", got)
+	}
+}
+
+func TestDeleteOpenClawAgentRestoresSessionsWhenCronMirrorWriteFails(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	writeJSON(t, filepath.Join(dir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "main",
+			"list": []interface{}{
+				map[string]interface{}{"id": "main", "default": true},
+				map[string]interface{}{"id": "work"},
+			},
+		},
+		"cron": map[string]interface{}{
+			"jobs": []interface{}{
+				map[string]interface{}{"id": "cfg_job_1", "sessionTarget": "work"},
+			},
+		},
+	})
+	writeJSON(t, filepath.Join(dir, "cron", "jobs.json"), map[string]interface{}{
+		"version": 1,
+		"jobs": []interface{}{
+			map[string]interface{}{"id": "job_1", "sessionTarget": "work"},
+		},
+	})
+	if err := os.MkdirAll(filepath.Join(dir, "cron", "jobs.json.bak"), 0755); err != nil {
+		t.Fatalf("mkdir blocking cron backup dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cron", "jobs.json.bak", "keep"), []byte("1"), 0644); err != nil {
+		t.Fatalf("seed blocking cron backup dir: %v", err)
+	}
+	sessionsDir := filepath.Join(dir, "agents", "work", "sessions")
+	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+		t.Fatalf("mkdir sessions dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionsDir, "sessions.json"), []byte(`{}`), 0644); err != nil {
+		t.Fatalf("seed sessions file: %v", err)
+	}
+
+	r := gin.New()
+	r.DELETE("/openclaw/agents/:id", DeleteOpenClawAgent(cfg))
+	req := httptest.NewRequest(http.MethodDelete, "/openclaw/agents/work", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(sessionsDir, "sessions.json")); err != nil {
+		t.Fatalf("expected staged sessions to be restored after cron failure: %v", err)
 	}
 }
 
@@ -1679,18 +1816,19 @@ func TestPreviewRouteRespectsBindingOrder(t *testing.T) {
 		},
 		"bindings": []interface{}{
 			map[string]interface{}{
-				"name":    "work-group",
-				"enabled": true,
 				"agentId": "work",
+				"comment": "work-group",
 				"match": map[string]interface{}{
 					"channel": "qq",
-					"peer":    "group:*",
+					"peer": map[string]interface{}{
+						"kind": "group",
+						"id":   "123",
+					},
 				},
 			},
 			map[string]interface{}{
-				"name":    "fallback-qq",
-				"enabled": true,
 				"agentId": "main",
+				"comment": "fallback-qq",
 				"match": map[string]interface{}{
 					"channel": "qq",
 				},
@@ -1714,9 +1852,10 @@ func TestPreviewRouteRespectsBindingOrder(t *testing.T) {
 	var resp struct {
 		OK     bool `json:"ok"`
 		Result struct {
-			Agent     string   `json:"agent"`
-			MatchedBy string   `json:"matchedBy"`
-			Trace     []string `json:"trace"`
+			Agent        string   `json:"agent"`
+			MatchedBy    string   `json:"matchedBy"`
+			MatchedIndex int      `json:"matchedIndex"`
+			Trace        []string `json:"trace"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
@@ -1728,8 +1867,11 @@ func TestPreviewRouteRespectsBindingOrder(t *testing.T) {
 	if resp.Result.Agent != "work" {
 		t.Fatalf("expected first binding to match work, got %s", resp.Result.Agent)
 	}
-	if !strings.HasPrefix(resp.Result.MatchedBy, "bindings[0]") {
-		t.Fatalf("expected matchedBy to reference first binding, got %s", resp.Result.MatchedBy)
+	if resp.Result.MatchedBy != "binding.peer" {
+		t.Fatalf("expected matchedBy binding.peer, got %s", resp.Result.MatchedBy)
+	}
+	if resp.Result.MatchedIndex != 0 {
+		t.Fatalf("expected matchedIndex 0, got %d", resp.Result.MatchedIndex)
 	}
 }
 
@@ -1810,17 +1952,18 @@ func TestPreviewRoutePrefersHigherPriorityOverRuleOrder(t *testing.T) {
 		"bindings": []interface{}{
 			map[string]interface{}{
 				"agentId": "main",
-				"enabled": true,
 				"match": map[string]interface{}{
 					"channel": "qq",
 				},
 			},
 			map[string]interface{}{
 				"agentId": "work",
-				"enabled": true,
 				"match": map[string]interface{}{
 					"channel": "qq",
-					"peer":    "group:*",
+					"peer": map[string]interface{}{
+						"kind": "group",
+						"id":   "123",
+					},
 				},
 			},
 		},
@@ -1839,8 +1982,9 @@ func TestPreviewRoutePrefersHigherPriorityOverRuleOrder(t *testing.T) {
 	var resp struct {
 		OK     bool `json:"ok"`
 		Result struct {
-			Agent     string `json:"agent"`
-			MatchedBy string `json:"matchedBy"`
+			Agent        string `json:"agent"`
+			MatchedBy    string `json:"matchedBy"`
+			MatchedIndex int    `json:"matchedIndex"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
@@ -1851,6 +1995,9 @@ func TestPreviewRoutePrefersHigherPriorityOverRuleOrder(t *testing.T) {
 	}
 	if !strings.Contains(resp.Result.MatchedBy, "peer") {
 		t.Fatalf("matchedBy should indicate peer priority, got %s", resp.Result.MatchedBy)
+	}
+	if resp.Result.MatchedIndex != 1 {
+		t.Fatalf("expected matchedIndex 1 for higher-priority second rule, got %d", resp.Result.MatchedIndex)
 	}
 }
 
@@ -1879,7 +2026,6 @@ func TestPreviewRouteChannelOnlyBindingUsesDefaultAccountScope(t *testing.T) {
 		"bindings": []interface{}{
 			map[string]interface{}{
 				"agentId": "main",
-				"enabled": true,
 				"match": map[string]interface{}{
 					"channel": "discord",
 				},
@@ -1911,8 +2057,8 @@ func TestPreviewRouteChannelOnlyBindingUsesDefaultAccountScope(t *testing.T) {
 		t.Fatalf("expected fallback to default agent work when account mismatch, got %s", resp.Result.Agent)
 	}
 	joined := strings.Join(resp.Result.Trace, "\n")
-	if !strings.Contains(joined, "mismatch implicit default account") {
-		t.Fatalf("trace should mention implicit default account mismatch, got: %s", joined)
+	if !strings.Contains(joined, "fallback default: work") {
+		t.Fatalf("trace should mention default fallback, got: %s", joined)
 	}
 }
 
@@ -1991,7 +2137,7 @@ func TestSaveBindingsRequiresChannelField(t *testing.T) {
 
 	r := gin.New()
 	r.PUT("/openclaw/bindings", SaveOpenClawBindings(cfg))
-	body := []byte(`{"bindings":[{"agentId":"main","enabled":true,"match":{"peer":"group:*"}}]}`)
+	body := []byte(`{"bindings":[{"agentId":"main","match":{"peer":{"kind":"group","id":"123"}}}]}`)
 	req := httptest.NewRequest(http.MethodPut, "/openclaw/bindings", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -2022,7 +2168,7 @@ func TestSaveBindingsRejectsNonStringMatchArrayItem(t *testing.T) {
 
 	r := gin.New()
 	r.PUT("/openclaw/bindings", SaveOpenClawBindings(cfg))
-	body := []byte(`{"bindings":[{"agentId":"main","enabled":true,"match":{"channel":[1]}}]}`)
+	body := []byte(`{"bindings":[{"agentId":"main","match":{"channel":"qq","guildId":"guild-1","roles":[1]}}]}`)
 	req := httptest.NewRequest(http.MethodPut, "/openclaw/bindings", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -2031,8 +2177,170 @@ func TestSaveBindingsRejectsNonStringMatchArrayItem(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 when match array contains non-string item, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "仅支持字符串") {
+	if !strings.Contains(w.Body.String(), "仅支持字符串数组") {
 		t.Fatalf("error should mention string-only array items, got: %s", w.Body.String())
+	}
+}
+
+func TestPreviewRouteSkipsDisabledBinding(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	writeJSON(t, filepath.Join(dir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "main",
+			"list": []interface{}{
+				map[string]interface{}{"id": "main"},
+				map[string]interface{}{"id": "work"},
+			},
+		},
+		"bindings": []interface{}{
+			map[string]interface{}{
+				"agentId": "work",
+				"enabled": false,
+				"match": map[string]interface{}{
+					"channel": "qq",
+					"peer": map[string]interface{}{
+						"kind": "group",
+						"id":   "123",
+					},
+				},
+			},
+			map[string]interface{}{
+				"agentId": "main",
+				"match": map[string]interface{}{
+					"channel": "qq",
+				},
+			},
+		},
+	})
+
+	r := gin.New()
+	r.POST("/route/preview", PreviewOpenClawRoute(cfg))
+	req := httptest.NewRequest(http.MethodPost, "/route/preview", bytes.NewReader([]byte(`{"meta":{"channel":"qq","peer":"group:123"}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Agent        string   `json:"agent"`
+			MatchedBy    string   `json:"matchedBy"`
+			MatchedIndex int      `json:"matchedIndex"`
+			Trace        []string `json:"trace"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Result.Agent != "main" {
+		t.Fatalf("expected disabled binding to be skipped in favor of main, got %s", resp.Result.Agent)
+	}
+	if resp.Result.MatchedBy != "binding.channel" || resp.Result.MatchedIndex != 1 {
+		t.Fatalf("expected fallback channel binding to win, got matchedBy=%s index=%d", resp.Result.MatchedBy, resp.Result.MatchedIndex)
+	}
+	if !strings.Contains(strings.Join(resp.Result.Trace, "\n"), "skip bindings[0]: disabled") {
+		t.Fatalf("expected trace to mention disabled binding, got: %v", resp.Result.Trace)
+	}
+}
+
+func TestSaveBindingsPreservesDisabledFlag(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	writeJSON(t, filepath.Join(dir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "main",
+			"list": []interface{}{
+				map[string]interface{}{"id": "main"},
+				map[string]interface{}{"id": "work"},
+			},
+		},
+	})
+
+	r := gin.New()
+	r.PUT("/openclaw/bindings", SaveOpenClawBindings(cfg))
+	body := []byte(`{"bindings":[{"agentId":"work","enabled":false,"match":{"channel":"qq"}}]}`)
+	req := httptest.NewRequest(http.MethodPut, "/openclaw/bindings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	saved, err := cfg.ReadOpenClawJSON()
+	if err != nil {
+		t.Fatalf("read openclaw.json: %v", err)
+	}
+	bindings, _ := saved["bindings"].([]interface{})
+	if len(bindings) != 1 {
+		t.Fatalf("expected one binding, got %#v", saved["bindings"])
+	}
+	binding, _ := bindings[0].(map[string]interface{})
+	if enabled, ok := binding["enabled"].(bool); !ok || enabled {
+		t.Fatalf("expected enabled=false to be preserved, got %#v", binding["enabled"])
+	}
+}
+
+func TestGetOpenClawAgentIdentityAvatarRejectsSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	workspace := filepath.Join(dir, "workspace", "main")
+	outside := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "evil.png"), []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, 0o644); err != nil {
+		t.Fatalf("write evil png: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "escape")); err != nil {
+		t.Fatalf("symlink escape dir: %v", err)
+	}
+
+	writeJSON(t, filepath.Join(dir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "main",
+			"list": []interface{}{
+				map[string]interface{}{
+					"id":        "main",
+					"workspace": workspace,
+					"identity": map[string]interface{}{
+						"avatar": "escape/evil.png",
+					},
+				},
+			},
+		},
+	})
+
+	r := gin.New()
+	r.GET("/openclaw/agents/:id/identity/avatar", GetOpenClawAgentIdentityAvatar(cfg))
+	req := httptest.NewRequest(http.MethodGet, "/openclaw/agents/main/identity/avatar", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for symlink escape avatar, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "agent workspace") {
+		t.Fatalf("expected workspace containment error, got: %s", w.Body.String())
 	}
 }
 
@@ -2359,6 +2667,393 @@ func TestPreviewRouteFallsBackToEffectiveDefaultAgent(t *testing.T) {
 	}
 }
 
+func TestPreviewRouteWildcardAccountBindingBeatsChannelCatchAll(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	writeJSON(t, filepath.Join(dir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "main",
+			"list": []interface{}{
+				map[string]interface{}{"id": "main"},
+				map[string]interface{}{"id": "work"},
+			},
+		},
+		"channels": map[string]interface{}{
+			"feishu": map[string]interface{}{
+				"defaultAccount": "default",
+				"accounts": map[string]interface{}{
+					"default": map[string]interface{}{
+						"appId":     "cli_demo",
+						"appSecret": "secret",
+					},
+				},
+			},
+		},
+		"bindings": []interface{}{
+			map[string]interface{}{
+				"agentId": "main",
+				"match": map[string]interface{}{
+					"channel": "feishu",
+				},
+			},
+			map[string]interface{}{
+				"agentId": "work",
+				"match": map[string]interface{}{
+					"channel":   "feishu",
+					"accountId": "*",
+				},
+			},
+		},
+	})
+
+	r := gin.New()
+	r.POST("/route/preview", PreviewOpenClawRoute(cfg))
+	req := httptest.NewRequest(http.MethodPost, "/route/preview", bytes.NewReader([]byte(`{"meta":{"channel":"feishu"}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Agent        string `json:"agent"`
+			MatchedBy    string `json:"matchedBy"`
+			MatchedIndex int    `json:"matchedIndex"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Result.Agent != "work" {
+		t.Fatalf("expected wildcard-account binding to beat channel catch-all, got %s", resp.Result.Agent)
+	}
+	if resp.Result.MatchedBy != "binding.account.wildcard" {
+		t.Fatalf("expected matchedBy binding.account.wildcard, got %s", resp.Result.MatchedBy)
+	}
+	if resp.Result.MatchedIndex != 1 {
+		t.Fatalf("expected matchedIndex 1, got %d", resp.Result.MatchedIndex)
+	}
+}
+
+func TestPreviewRouteLegacyPeerWildcardStringMatchesAnyGroup(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	writeJSON(t, filepath.Join(dir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "main",
+			"list": []interface{}{
+				map[string]interface{}{"id": "main"},
+				map[string]interface{}{"id": "work"},
+			},
+		},
+		"bindings": []interface{}{
+			map[string]interface{}{
+				"agentId": "work",
+				"match": map[string]interface{}{
+					"channel": "qq",
+					"peer":    "group:*",
+				},
+			},
+			map[string]interface{}{
+				"agentId": "main",
+				"match": map[string]interface{}{
+					"channel": "qq",
+				},
+			},
+		},
+	})
+
+	r := gin.New()
+	r.POST("/route/preview", PreviewOpenClawRoute(cfg))
+	req := httptest.NewRequest(http.MethodPost, "/route/preview", bytes.NewReader([]byte(`{"meta":{"channel":"qq","peer":"group:88001"}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Agent     string `json:"agent"`
+			MatchedBy string `json:"matchedBy"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Result.Agent != "work" {
+		t.Fatalf("expected legacy peer wildcard to match work, got %s", resp.Result.Agent)
+	}
+	if resp.Result.MatchedBy != "binding.peer" {
+		t.Fatalf("expected matchedBy binding.peer, got %s", resp.Result.MatchedBy)
+	}
+}
+
+func TestPreviewRouteLegacySenderAndParentPeerBindings(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	writeJSON(t, filepath.Join(dir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "main",
+			"list": []interface{}{
+				map[string]interface{}{"id": "main"},
+				map[string]interface{}{"id": "sender-agent"},
+				map[string]interface{}{"id": "thread-agent"},
+			},
+		},
+		"bindings": []interface{}{
+			map[string]interface{}{
+				"agentId": "sender-agent",
+				"match": map[string]interface{}{
+					"channel": "qq",
+					"sender":  "alice",
+				},
+			},
+			map[string]interface{}{
+				"agentId": "thread-agent",
+				"match": map[string]interface{}{
+					"channel":    "qq",
+					"parentPeer": "thread:release-notes",
+				},
+			},
+			map[string]interface{}{
+				"agentId": "main",
+				"match": map[string]interface{}{
+					"channel": "qq",
+				},
+			},
+		},
+	})
+
+	r := gin.New()
+	r.POST("/route/preview", PreviewOpenClawRoute(cfg))
+
+	reqSender := httptest.NewRequest(http.MethodPost, "/route/preview", bytes.NewReader([]byte(`{"meta":{"channel":"qq","sender":"alice"}}`)))
+	reqSender.Header.Set("Content-Type", "application/json")
+	wSender := httptest.NewRecorder()
+	r.ServeHTTP(wSender, reqSender)
+	if wSender.Code != http.StatusOK {
+		t.Fatalf("sender preview expected 200, got %d: %s", wSender.Code, wSender.Body.String())
+	}
+	var senderResp struct {
+		Result struct {
+			Agent     string `json:"agent"`
+			MatchedBy string `json:"matchedBy"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(wSender.Body.Bytes(), &senderResp); err != nil {
+		t.Fatalf("decode sender preview: %v", err)
+	}
+	if senderResp.Result.Agent != "sender-agent" || senderResp.Result.MatchedBy != "binding.sender" {
+		t.Fatalf("expected sender rule to win, got agent=%s matchedBy=%s", senderResp.Result.Agent, senderResp.Result.MatchedBy)
+	}
+
+	reqParent := httptest.NewRequest(http.MethodPost, "/route/preview", bytes.NewReader([]byte(`{"meta":{"channel":"qq","parentPeer":"thread:release-notes"}}`)))
+	reqParent.Header.Set("Content-Type", "application/json")
+	wParent := httptest.NewRecorder()
+	r.ServeHTTP(wParent, reqParent)
+	if wParent.Code != http.StatusOK {
+		t.Fatalf("parentPeer preview expected 200, got %d: %s", wParent.Code, wParent.Body.String())
+	}
+	var parentResp struct {
+		Result struct {
+			Agent     string `json:"agent"`
+			MatchedBy string `json:"matchedBy"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(wParent.Body.Bytes(), &parentResp); err != nil {
+		t.Fatalf("decode parentPeer preview: %v", err)
+	}
+	if parentResp.Result.Agent != "thread-agent" || parentResp.Result.MatchedBy != "binding.peer.parent" {
+		t.Fatalf("expected parentPeer rule to win, got agent=%s matchedBy=%s", parentResp.Result.Agent, parentResp.Result.MatchedBy)
+	}
+}
+
+func TestPreviewRouteLegacyPeerParentPeerFallback(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	writeJSON(t, filepath.Join(dir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "main",
+			"list": []interface{}{
+				map[string]interface{}{"id": "main"},
+				map[string]interface{}{"id": "thread-agent"},
+			},
+		},
+		"bindings": []interface{}{
+			map[string]interface{}{
+				"agentId": "thread-agent",
+				"match": map[string]interface{}{
+					"channel":    "qq",
+					"parentPeer": "thread:release-notes",
+				},
+			},
+			map[string]interface{}{
+				"agentId": "main",
+				"match": map[string]interface{}{
+					"channel": "qq",
+				},
+			},
+		},
+	})
+
+	r := gin.New()
+	r.POST("/route/preview", PreviewOpenClawRoute(cfg))
+	req := httptest.NewRequest(http.MethodPost, "/route/preview", bytes.NewReader([]byte(`{"meta":{"channel":"qq","peer":"thread:release-notes"}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Result struct {
+			Agent     string `json:"agent"`
+			MatchedBy string `json:"matchedBy"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Result.Agent != "thread-agent" || resp.Result.MatchedBy != "binding.peer.parent" {
+		t.Fatalf("expected peer input to fall back to parentPeer rule, got agent=%s matchedBy=%s", resp.Result.Agent, resp.Result.MatchedBy)
+	}
+}
+
+func TestPreviewRouteParentPeerDoesNotPromotePeerTier(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	writeJSON(t, filepath.Join(dir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "main",
+			"list": []interface{}{
+				map[string]interface{}{"id": "main"},
+				map[string]interface{}{"id": "peer-agent"},
+				map[string]interface{}{"id": "parent-agent"},
+			},
+		},
+		"bindings": []interface{}{
+			map[string]interface{}{
+				"agentId": "peer-agent",
+				"match": map[string]interface{}{
+					"channel": "qq",
+					"peer":    "thread:release-notes",
+				},
+			},
+			map[string]interface{}{
+				"agentId": "parent-agent",
+				"match": map[string]interface{}{
+					"channel":    "qq",
+					"parentPeer": "thread:release-notes",
+				},
+			},
+			map[string]interface{}{
+				"agentId": "main",
+				"match": map[string]interface{}{
+					"channel": "qq",
+				},
+			},
+		},
+	})
+
+	r := gin.New()
+	r.POST("/route/preview", PreviewOpenClawRoute(cfg))
+	req := httptest.NewRequest(http.MethodPost, "/route/preview", bytes.NewReader([]byte(`{"meta":{"channel":"qq","parentPeer":"thread:release-notes"}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Result struct {
+			Agent     string `json:"agent"`
+			MatchedBy string `json:"matchedBy"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Result.Agent != "parent-agent" || resp.Result.MatchedBy != "binding.peer.parent" {
+		t.Fatalf("expected parentPeer-only input to stay on parent tier, got agent=%s matchedBy=%s", resp.Result.Agent, resp.Result.MatchedBy)
+	}
+}
+
+func TestSaveBindingsPreservesLegacyMatchFields(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	writeJSON(t, filepath.Join(dir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"default": "main",
+			"list": []interface{}{
+				map[string]interface{}{"id": "main"},
+				map[string]interface{}{"id": "work"},
+			},
+		},
+	})
+
+	r := gin.New()
+	r.PUT("/openclaw/bindings", SaveOpenClawBindings(cfg))
+	body := []byte(`{"bindings":[{"agentId":"work","match":{"channel":"qq","sender":"alice","peer":"group:*","parentPeer":"thread:release-notes"}}]}`)
+	req := httptest.NewRequest(http.MethodPut, "/openclaw/bindings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "openclaw.json"))
+	if err != nil {
+		t.Fatalf("read openclaw.json: %v", err)
+	}
+	var stored map[string]interface{}
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatalf("decode openclaw.json: %v", err)
+	}
+	bindings, _ := stored["bindings"].([]interface{})
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 binding, got %d", len(bindings))
+	}
+	binding, _ := bindings[0].(map[string]interface{})
+	match, _ := binding["match"].(map[string]interface{})
+	if got := strings.TrimSpace(toString(match["sender"])); got != "alice" {
+		t.Fatalf("expected sender to be preserved, got %q", got)
+	}
+	if got := strings.TrimSpace(toString(match["peer"])); got != "group:*" {
+		t.Fatalf("expected peer wildcard string to be preserved, got %#v", match["peer"])
+	}
+	if got := strings.TrimSpace(toString(match["parentPeer"])); got != "thread:release-notes" {
+		t.Fatalf("expected parentPeer string to be preserved, got %#v", match["parentPeer"])
+	}
+}
+
 func TestSaveCronJobsFillsSessionTargetWithDefaultAgent(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -2399,8 +3094,8 @@ func TestSaveCronJobsFillsSessionTargetWithDefaultAgent(t *testing.T) {
 		t.Fatalf("expected one job, got %d", len(jobs))
 	}
 	job, _ := jobs[0].(map[string]interface{})
-	if got := strings.TrimSpace(getString(job, "sessionTarget")); got != "work" {
-		t.Fatalf("expected sessionTarget filled with default work, got %q", got)
+	if got := strings.TrimSpace(getString(job, "sessionTarget")); got != "main" {
+		t.Fatalf("expected sessionTarget normalised to \"main\" (official default), got %q", got)
 	}
 }
 
@@ -2443,8 +3138,8 @@ func TestSaveCronJobsFallsBackWhenConfiguredDefaultInvalid(t *testing.T) {
 		t.Fatalf("expected one job, got %d", len(jobs))
 	}
 	job, _ := jobs[0].(map[string]interface{})
-	if got := strings.TrimSpace(getString(job, "sessionTarget")); got != "work" {
-		t.Fatalf("expected sessionTarget fallback to work, got %q", got)
+	if got := strings.TrimSpace(getString(job, "sessionTarget")); got != "main" {
+		t.Fatalf("expected sessionTarget normalised to \"main\" (official default), got %q", got)
 	}
 }
 

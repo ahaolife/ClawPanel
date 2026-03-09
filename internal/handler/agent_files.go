@@ -36,6 +36,7 @@ var agentCoreFileNames = []string{
 	"IDENTITY.md",
 	"USER.md",
 	"HEARTBEAT.md",
+	"BOOT.md",
 	"BOOTSTRAP.md",
 	"MEMORY.md",
 }

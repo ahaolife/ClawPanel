@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -108,13 +109,32 @@ func (m *Manager) GetPluginsDir() string {
 	return m.pluginsDir
 }
 
-// ListInstalled returns all installed plugins
+// ListInstalled returns all installed plugins with enabled state reconciled against
+// openclaw.json so that CLI-side enable/disable toggles are reflected immediately.
 func (m *Manager) ListInstalled() []*InstalledPlugin {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
 	result := make([]*InstalledPlugin, 0, len(m.plugins))
 	for _, p := range m.plugins {
-		result = append(result, p)
+		cp := *p // value copy so we can mutate without touching the in-memory map
+		result = append(result, &cp)
+	}
+	m.mu.RUnlock()
+
+	// Reconcile: read openclaw.json entries and override enabled state so the panel
+	// reflects any changes made via the OpenClaw CLI (e.g. `openclaw plugins disable`).
+	ocConfig, err := m.cfg.ReadOpenClawJSON()
+	if err == nil && ocConfig != nil {
+		if pl, ok := ocConfig["plugins"].(map[string]interface{}); ok {
+			if entries, ok := pl["entries"].(map[string]interface{}); ok {
+				for _, p := range result {
+					if entry, ok := entries[p.ID].(map[string]interface{}); ok {
+						if enabled, ok := entry["enabled"].(bool); ok {
+							p.Enabled = enabled
+						}
+					}
+				}
+			}
+		}
 	}
 	return result
 }
@@ -380,6 +400,9 @@ func (m *Manager) InstallWithProgress(pluginID string, source string, logf func(
 		if regPlugin != nil {
 			meta = &regPlugin.PluginMeta
 		}
+	}
+	if err := m.ensureOpenClawPluginManifest(pluginDir, meta); err != nil {
+		return fmt.Errorf("生成 openclaw.plugin.json 失败: %v", err)
 	}
 
 	// Install npm dependencies if package.json exists
@@ -735,6 +758,9 @@ func (m *Manager) scanInstalledPlugins() {
 		if err != nil {
 			continue
 		}
+		if err := m.ensureOpenClawPluginManifest(pluginDir, meta); err != nil {
+			log.Printf("warn: could not write openclaw.plugin.json for %s: %v", meta.ID, err)
+		}
 
 		enabled := true
 		source := "local"
@@ -763,27 +789,69 @@ func (m *Manager) scanInstalledPlugins() {
 }
 
 func (m *Manager) readPluginMeta(dir string) (*PluginMeta, error) {
-	metaPath := filepath.Join(dir, "plugin.json")
-	data, err := os.ReadFile(metaPath)
-	if err != nil {
-		// Try package.json as fallback
-		pkgPath := filepath.Join(dir, "package.json")
-		data, err = os.ReadFile(pkgPath)
+	// Preference order: plugin.json → openclaw.plugin.json (official manifest) → package.json.
+	candidates := []string{
+		filepath.Join(dir, "plugin.json"),
+		filepath.Join(dir, "openclaw.plugin.json"),
+		filepath.Join(dir, "package.json"),
+	}
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("no plugin.json or package.json found")
+			continue
+		}
+		var meta PluginMeta
+		if err := json.Unmarshal(data, &meta); err != nil {
+			continue
+		}
+		if meta.ID == "" {
+			meta.ID = filepath.Base(dir)
+		}
+		if meta.Name == "" {
+			meta.Name = meta.ID
+		}
+		return &meta, nil
+	}
+	return nil, fmt.Errorf("no plugin.json, openclaw.plugin.json or package.json found in %s", dir)
+}
+
+func (m *Manager) ensureOpenClawPluginManifest(dir string, meta *PluginMeta) error {
+	manifestPath := filepath.Join(dir, "openclaw.plugin.json")
+	if _, err := os.Stat(manifestPath); err == nil {
+		return nil
+	}
+	if meta == nil || strings.TrimSpace(meta.ID) == "" {
+		return nil
+	}
+	manifest := map[string]interface{}{
+		"id": strings.TrimSpace(meta.ID),
+	}
+	if name := strings.TrimSpace(meta.Name); name != "" {
+		manifest["name"] = name
+	}
+	if description := strings.TrimSpace(meta.Description); description != "" {
+		manifest["description"] = description
+	}
+	if version := strings.TrimSpace(meta.Version); version != "" {
+		manifest["version"] = version
+	}
+	if len(meta.ConfigSchema) > 0 {
+		var schema interface{}
+		if err := json.Unmarshal(meta.ConfigSchema, &schema); err == nil && schema != nil {
+			manifest["configSchema"] = schema
 		}
 	}
-	var meta PluginMeta
-	if err := json.Unmarshal(data, &meta); err != nil {
-		return nil, err
+	if _, ok := manifest["configSchema"]; !ok {
+		manifest["configSchema"] = map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}
 	}
-	if meta.ID == "" {
-		meta.ID = filepath.Base(dir)
+	raw, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
 	}
-	if meta.Name == "" {
-		meta.Name = meta.ID
-	}
-	return &meta, nil
+	return os.WriteFile(manifestPath, raw, 0644)
 }
 
 func (m *Manager) loadPluginsState() {

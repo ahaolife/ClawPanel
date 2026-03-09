@@ -126,6 +126,22 @@ func validateOpenClawNumericConfig(ocCfg map[string]interface{}) error {
 			},
 		},
 		{
+			value: getNestedMapValue(ocCfg, "agents", "defaults", "bootstrapMaxChars"),
+			constraint: numericFieldConstraint{
+				label:   "agents.defaults.bootstrapMaxChars",
+				integer: true,
+				min:     float64Ptr(1),
+			},
+		},
+		{
+			value: getNestedMapValue(ocCfg, "agents", "defaults", "bootstrapTotalMaxChars"),
+			constraint: numericFieldConstraint{
+				label:   "agents.defaults.bootstrapTotalMaxChars",
+				integer: true,
+				min:     float64Ptr(1),
+			},
+		},
+		{
 			value: getNestedMapValue(ocCfg, "agents", "defaults", "compaction", "maxHistoryShare"),
 			constraint: numericFieldConstraint{
 				label: "agents.defaults.compaction.maxHistoryShare",

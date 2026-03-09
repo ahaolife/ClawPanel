@@ -208,6 +208,7 @@ func runServer(stopCh chan struct{}) {
 			auth.DELETE("/openclaw/agents/:id", handler.DeleteOpenClawAgent(cfg))
 			auth.GET("/openclaw/agents/:id/core-files", handler.GetOpenClawAgentCoreFiles(cfg))
 			auth.PUT("/openclaw/agents/:id/core-files", handler.SaveOpenClawAgentCoreFile(cfg))
+			auth.GET("/openclaw/agents/:id/identity/avatar", handler.GetOpenClawAgentIdentityAvatar(cfg))
 			auth.GET("/openclaw/bindings", handler.GetOpenClawBindings(cfg))
 			auth.PUT("/openclaw/bindings", handler.SaveOpenClawBindings(cfg))
 			auth.POST("/openclaw/route/preview", handler.PreviewOpenClawRoute(cfg))
@@ -242,6 +243,8 @@ func runServer(stopCh chan struct{}) {
 			// 技能 & 插件
 			auth.GET("/system/skills", handler.GetSkills(cfg))
 			auth.PUT("/system/skills/:id/toggle", handler.ToggleSkill(cfg))
+			auth.GET("/system/clawhub/search", handler.SearchClawHub(cfg))
+			auth.POST("/system/clawhub/install", handler.InstallClawHubSkill(cfg))
 
 			// 定时任务
 			auth.GET("/system/cron", handler.GetCronJobs(cfg))

@@ -216,7 +216,6 @@ export interface Translations {
     deleted: string;
     deleteFailed: string;
     deleteConfirm: string;
-    sessionTarget: string;
     wakeMode: string;
     jobType: string;
     resultPush: string;
@@ -224,13 +223,27 @@ export interface Translations {
     lastRun: string;
     everyMinutes: string;
     oneTime: string;
+    agentId: string;
+    sessionMode: string;
+    sessionModeMain: string;
+    sessionModeIsolated: string;
+    scheduleKind: string;
+    scheduleKindCron: string;
+    scheduleKindEvery: string;
+    scheduleKindAt: string;
+    intervalMinutes: string;
+    atDateTime: string;
   };
 
   // Skills
   skills: {
     title: string;
     subtitle: string;
+    description: string;
     refreshList: string;
+    localSkills: string;
+    plugins: string;
+    clawHub: string;
     installedTab: string;
     pluginsTab: string;
     clawHubTab: string;
@@ -240,6 +253,7 @@ export interface Translations {
     enabledFilter: string;
     disabledFilter: string;
     loadingSkills: string;
+    loadingClawHub: string;
     noMatch: string;
     noSkillsFound: string;
     clawHubTitle: string;
@@ -251,18 +265,31 @@ export interface Translations {
     syncDone: string;
     syncFailed: string;
     installHint: string;
+    installSuccess: string;
+    installFailed: string;
     configRequired: string;
     configRequirements: string;
     envVars: string;
     binTools: string;
+    anyBinTools: string;
     cliTool: string;
+    anyCliTool: string;
+    anyBinHint: string;
+    configKeys: string;
+    configField: string;
+    configKeyHint: string;
     installPath: string;
     // Source badges
     srcInstalled: string;
     srcDevExt: string;
     srcSkill: string;
+    srcManaged: string;
     srcAppSkill: string;
     srcWorkspace: string;
+    srcWorkspaceAgent: string;
+    srcGlobalAgent: string;
+    srcPluginSkill: string;
+    srcExtraDir: string;
     srcScript: string;
     srcConfig: string;
   };

@@ -750,10 +750,13 @@ export default function Channels() {
   const currentFeishuRunnableAccounts = listFeishuRunnableAccountIDs(currentFeishuConfig);
   const currentFeishuEnabledCount = countEnabledFeishuAccounts(currentFeishuConfig);
   const currentFeishuVariantHint = currentFeishuVariant === 'official'
-    ? '官方版仍在快速迭代，面板目前优先暴露确认过的共享字段。'
+    ? '官方版仍在快速迭代；面板目前优先暴露确认过的共享字段，高级账号结构是否被完整消费取决于插件版本。'
     : currentFeishuVariant === 'clawteam'
       ? 'ClawTeam 版字段相对明确；这里仍统一写入 channels.feishu 共享配置。'
       : '未检测到活动变体时，也会先写入共享的 channels.feishu 配置。';
+  const currentFeishuAccountBoundaryHint = currentFeishuVariant === 'official'
+    ? '当前已检测到官方插件；面板统一写入 channels.feishu。defaultAccount/accounts 是当前面板的高级账号模型，但官方插件是否完整消费这套结构尚未完全证实，请以插件版本和实测为准。至少需要确保默认账号具备完整凭证，顶层 appId/appSecret 会镜像这个账号。'
+    : '面板统一写入 channels.feishu；默认账号会同步镜像到顶层 appId/appSecret，便于单账号路径与高级账号路径共存。';
   const currentFeishuGroupPolicy = String(currentFeishuConfig.groupPolicy || '').trim();
   const currentFeishuGroupAllowFrom = formatCommaList(currentFeishuConfig.groupAllowFrom);
   const hasFeishuGroupAllowlistConflict = currentFeishuGroupPolicy !== 'allowlist' && !!currentFeishuGroupAllowFrom;
@@ -1844,6 +1847,10 @@ export default function Channels() {
                         {currentFeishuEnabledCount} / {Math.max(currentFeishuAccounts.length, currentFeishuDefaultAccount ? 1 : 0)}
                       </div>
                     </div>
+                  </div>
+
+                  <div className="rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-[12px] leading-relaxed text-sky-700 dark:border-sky-900/40 dark:bg-sky-950/20 dark:text-sky-200">
+                    {currentFeishuAccountBoundaryHint}
                   </div>
 
                   {!feishuAdvancedAccounts ? (
