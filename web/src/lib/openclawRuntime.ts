@@ -71,6 +71,6 @@ export function resolveOpenClawRuntime(openclawStatus?: any, processStatus?: any
     processRunning: false,
     gatewayRunning: false,
     title: 'OpenClaw 与网关均离线',
-    message: '当前运行环境异常，依赖 OpenClaw 的页面可能无法保存配置、安装插件或处理消息。',
+    message: '当前运行环境异常，依赖 OpenClaw 的页面可能无法保存配置、安装插件或处理消息。请尝试点击左下角手动重启 OpenClaw。',
   };
 }

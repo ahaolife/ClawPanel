@@ -52,6 +52,10 @@ type CfgField = {
   integer?: boolean;
 };
 
+function createEmptyProviderModel() {
+  return { id: '', name: '', contextWindow: 128000, maxTokens: 8192 };
+}
+
 function cloneConfig<T>(value: T): T {
   return JSON.parse(JSON.stringify(value ?? {}));
 }
@@ -653,7 +657,7 @@ export default function SystemConfig() {
                           baseUrl: kp.baseUrl,
                           apiKey: '',
                           api: kp.apiType || 'openai-completions',
-                          models: kp.models.map(m => ({ id: m, name: m, contextWindow: 128000, maxTokens: 8192 })),
+                          models: [createEmptyProviderModel()],
                         };
                         });
                       }} className={`px-2 py-0.5 text-[10px] font-medium rounded-md border transition-colors ${alreadyAdded ? 'opacity-40 cursor-not-allowed bg-gray-50 dark:bg-gray-800 text-gray-400 border-gray-200 dark:border-gray-700' : color}`}
@@ -675,7 +679,7 @@ export default function SystemConfig() {
                 updateConfig((clone: any) => {
                   if (!clone.models) clone.models = {};
                   if (!clone.models.providers) clone.models.providers = {};
-                  clone.models.providers[id] = { baseUrl: '', apiKey: '', api: 'openai-completions', models: [] };
+                  clone.models.providers[id] = { baseUrl: '', apiKey: '', api: 'openai-completions', models: [createEmptyProviderModel()] };
                 });
               }} className={`${modern ? 'page-modern-action px-3 py-1.5 text-xs font-medium' : 'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-violet-50 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400 hover:bg-violet-100 dark:hover:bg-violet-900/50 transition-colors'}`}>
                 <Plus size={14} />{i18n.sysConfig.addProvider}

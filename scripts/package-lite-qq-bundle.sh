@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-VERSION=${1:-${VERSION:-0.1.0-alpha}}
+VERSION=${1:-${VERSION:-0.1.1}}
 IMAGE=${IMAGE:-openclaw-im-manager-openclaw-qq:latest}
 OUTPUT_DIR=${OUTPUT_DIR:-"$ROOT_DIR/release/lite/v$VERSION"}
 

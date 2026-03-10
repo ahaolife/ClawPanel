@@ -1,9 +1,9 @@
 {
-  "latest_version": "0.1.0",
-  "release_time": "2026-03-10T20:40:00+08:00",
-  "release_note": "## ClawPanel Lite v0.1.0\n\n- Linux 首发可用版，安装后可直接配置 API Key 与常用通道\n- 默认内置 OpenClaw 2026.2.26 与常用插件，QQ NapCat 继续保持按需方案\n- 安装与更新优先走 GitHub，网络异常时自动回退到加速服务器",
+  "latest_version": "0.1.1",
+  "release_time": "2026-03-10T21:10:00+08:00",
+  "release_note": "## ClawPanel Lite v0.1.1\n\n- 快速添加模型服务商时不再自动写入过时模型 ID\n- OpenClaw 与网关均离线时新增更明确的手动重启提示\n- 安装脚本、文档与 Lite 发布链同步更新到 0.1.1",
   "download_urls": {
-    "linux_amd64": "http://39.102.53.188:16198/clawpanel/releases/clawpanel-lite-core-v0.1.0-linux-amd64.tar.gz"
+    "linux_amd64": "http://39.102.53.188:16198/clawpanel/releases/clawpanel-lite-core-v0.1.1-linux-amd64.tar.gz"
   },
   "major_change": false,
   "change_warning": ""
