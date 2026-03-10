@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import { Radio, Wifi, WifiOff, QrCode, Key, Zap, UserCheck, Check, X, Power, Loader2, RefreshCw, LogOut, Sparkles, Download, Package, Wrench, Search, Copy, CheckCircle, AlertTriangle, AlertCircle, Trash2 } from 'lucide-react';
+import InfoTooltip from '../components/InfoTooltip';
 import { useI18n } from '../i18n';
 
 type ChannelFieldSection = 'default' | 'access' | 'conversation' | 'advanced';
@@ -2140,9 +2141,8 @@ export default function Channels() {
                     <div className="space-y-1.5">
                       <h4 className="text-sm font-semibold text-gray-900 dark:text-white">私聊上下文隔离诊断</h4>
                       <p className="text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
-                        飞书私聊真正使用的是顶层 <span className="font-mono">session.dmScope</span>，不是
-                        <span className="mx-1 font-mono">channels.feishu.dmScope</span>。
-                        如果这里未写入，OpenClaw 运行时等价于 <span className="font-mono">main</span>。
+                        飞书私聊的上下文隔离由全局配置控制，如果未写入则运行时等价于"main"模式。
+                        <InfoTooltip content={<>真正生效的字段是顶层 <code className="font-mono text-[11px]">session.dmScope</code>，而非 <code className="font-mono text-[11px]">channels.feishu.dmScope</code>（后者已弃用）。</>} />
                       </p>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 xl:w-[540px]">
@@ -2171,8 +2171,9 @@ export default function Channels() {
                     <div className="text-[12px] leading-relaxed text-sky-900 dark:text-sky-100">
                       <div className="font-semibold">配置入口已收敛到系统设置</div>
                       <div className="mt-1 text-sky-800/90 dark:text-sky-100/85">
-                        <span className="font-mono">session.dmScope</span> 是全局配置。这里保留飞书账号与运行中会话的诊断视图，
+                        私聊隔离是全局配置，这里仅保留诊断视图。
                         真正的编辑入口请前往 <span className="font-medium">系统配置 &gt; 通用配置 &gt; 私聊上下文隔离</span>。
+                        <InfoTooltip content={<>对应字段 <code className="font-mono text-[11px]">session.dmScope</code>，是全局配置而非通道级配置。</>} />
                       </div>
                     </div>
                     <button
@@ -2185,9 +2186,9 @@ export default function Channels() {
                   </div>
 
                   {feishuDmDiagnosis?.unsupportedChannelDmScope && (
-                    <div className="rounded-lg border border-amber-200 dark:border-amber-800/40 bg-amber-50/80 dark:bg-amber-900/10 px-4 py-3 text-xs text-amber-700 dark:text-amber-300 leading-relaxed">
-                      检测到 <span className="font-mono">channels.feishu.dmScope = {feishuDmDiagnosis.unsupportedChannelDmScope}</span>。
-                      该字段不是当前 OpenClaw 的有效 schema，请改用系统设置中的 <span className="font-mono">session.dmScope</span>。
+                    <div className="rounded-lg border border-amber-200 dark:border-amber-800/40 bg-amber-50/80 dark:bg-amber-900/10 px-4 py-3 text-xs text-amber-700 dark:text-amber-300 leading-relaxed flex items-center gap-1.5 flex-wrap">
+                      检测到已弃用的通道级隔离配置（值：{feishuDmDiagnosis.unsupportedChannelDmScope}），请改用系统设置中的全局私聊隔离。
+                      <InfoTooltip content={<>检测到 <code className="font-mono text-[11px]">channels.feishu.dmScope = {feishuDmDiagnosis.unsupportedChannelDmScope}</code>，该字段不是当前 OpenClaw 的有效 schema，请改用 <code className="font-mono text-[11px]">session.dmScope</code>。</>} />
                     </div>
                   )}
 

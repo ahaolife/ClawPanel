@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { api } from '../lib/api';
 import { Plus, RefreshCw, Save, Trash2, ArrowUp, ArrowDown, Route, Bot, Settings, Brain, Shield, ChevronDown, ChevronRight, Sparkles, FileText } from 'lucide-react';
+import InfoTooltip from '../components/InfoTooltip';
 
 interface AgentItem {
   id: string;
@@ -9,8 +10,6 @@ interface AgentItem {
   workspace?: string;
   agentDir?: string;
   model?: any;
-  contextTokens?: number;
-  compaction?: any;
   tools?: any;
   sandbox?: any;
   groupChat?: any;
@@ -38,9 +37,6 @@ interface AgentFormState {
   paramTemperature: string;
   paramTopP: string;
   paramMaxTokens: string;
-  contextTokens: string;
-  compactionMode: '' | 'default' | 'safeguard';
-  compactionMaxHistoryShare: string;
   identityName: string;
   identityTheme: string;
   identityEmoji: string;
@@ -74,7 +70,6 @@ interface AgentFormState {
 interface AgentStructuredTouchedState {
   model: boolean;
   params: boolean;
-  context: boolean;
   identity: boolean;
   sandbox: boolean;
   groupChat: boolean;
@@ -212,9 +207,6 @@ const DEFAULT_AGENT_FORM: AgentFormState = {
   paramTemperature: '',
   paramTopP: '',
   paramMaxTokens: '',
-  contextTokens: '',
-  compactionMode: '',
-  compactionMaxHistoryShare: '',
   identityName: '',
   identityTheme: '',
   identityEmoji: '',
@@ -248,7 +240,6 @@ const DEFAULT_AGENT_FORM: AgentFormState = {
 const DEFAULT_AGENT_STRUCTURED_TOUCHED: AgentStructuredTouchedState = {
   model: false,
   params: false,
-  context: false,
   identity: false,
   sandbox: false,
   groupChat: false,
@@ -1133,17 +1124,6 @@ function extractModelDraft(raw: any): { primary: string; fallbacks: string } {
   };
 }
 
-function extractCompactionDraft(raw: any): { mode: '' | 'default' | 'safeguard'; maxHistoryShare: string } {
-  if (!isPlainObject(raw)) {
-    return { mode: '', maxHistoryShare: '' };
-  }
-  const mode = String(raw.mode || '').trim();
-  return {
-    mode: mode === 'default' || mode === 'safeguard' ? mode : '',
-    maxHistoryShare: raw.maxHistoryShare === undefined ? '' : String(raw.maxHistoryShare),
-  };
-}
-
 function extractIdentityDraft(raw: any): { name: string; theme: string; emoji: string; avatar: string } {
   if (!isPlainObject(raw)) {
     return { name: '', theme: '', emoji: '', avatar: '' };
@@ -1234,8 +1214,6 @@ function isImplicitAgent(agent?: AgentItem): boolean {
     agent.workspace ||
     agent.agentDir ||
     agent.model ||
-    agent.contextTokens !== undefined ||
-    agent.compaction ||
     agent.tools ||
     agent.sandbox ||
     agent.groupChat ||
@@ -1258,7 +1236,6 @@ function createAgentFormState(agent?: AgentItem): AgentFormState {
   const subagents = isPlainObject(agent?.subagents) ? agent?.subagents : {};
   const groupChat = isPlainObject(agent?.groupChat) ? agent?.groupChat : {};
   const sandboxDraft = extractSandboxDraft(agent?.sandbox);
-  const compactionDraft = extractCompactionDraft(agent?.compaction);
 
   return {
     ...DEFAULT_AGENT_FORM,
@@ -1272,9 +1249,6 @@ function createAgentFormState(agent?: AgentItem): AgentFormState {
     paramTemperature: params.temperature === undefined ? '' : String(params.temperature),
     paramTopP: params.topP === undefined ? '' : String(params.topP),
     paramMaxTokens: params.maxTokens === undefined ? '' : String(params.maxTokens),
-    contextTokens: agent?.contextTokens === undefined ? '' : String(agent.contextTokens),
-    compactionMode: compactionDraft.mode,
-    compactionMaxHistoryShare: compactionDraft.maxHistoryShare,
     identityName: identityDraft.name,
     identityTheme: identityDraft.theme,
     identityEmoji: identityDraft.emoji,
@@ -2035,7 +2009,6 @@ export default function Agents() {
       setMsg('Agent ID 不能为空');
       return;
     }
-    const baseAgent = agents.find(agent => agent.id === (editingId || id));
     let modelObj: any;
     let toolsObj: any;
     let sandboxObj: any;
@@ -2044,8 +2017,7 @@ export default function Agents() {
     let subagentsObj: any;
     let paramsObj: any;
     let runtimeObj: any;
-    let parsedContextTokens: number | undefined;
-    let parsedCompactionMaxHistoryShare: number | undefined;
+
     try {
       modelObj = parseJSONText(form.modelText, 'model');
       toolsObj = parseJSONText(form.toolsText, 'tools');
@@ -2089,9 +2061,6 @@ export default function Agents() {
         else nextParams.maxTokens = maxTokens;
         paramsObj = cleanupObject(nextParams);
       }
-
-      parsedContextTokens = parseNumberInput(form.contextTokens, 'contextTokens', { integer: true, min: 1 });
-      parsedCompactionMaxHistoryShare = parseNumberInput(form.compactionMaxHistoryShare, 'compaction.maxHistoryShare', { min: 0, max: 1 });
 
       if (structuredTouched.identity) {
         if (identityObj !== undefined && !isPlainObject(identityObj)) {
@@ -2208,25 +2177,6 @@ export default function Agents() {
     if (subagentsObj !== undefined) payload.subagents = subagentsObj;
     if (paramsObj !== undefined) payload.params = paramsObj;
     if (runtimeObj !== undefined) payload.runtime = runtimeObj;
-    if (structuredTouched.context) {
-      if (parsedContextTokens === undefined) {
-        if (baseAgent?.contextTokens !== undefined) payload.contextTokens = null;
-      } else {
-        payload.contextTokens = parsedContextTokens;
-      }
-
-      const nextCompaction = isPlainObject(baseAgent?.compaction) ? deepClone(baseAgent.compaction) : {};
-      if (form.compactionMode) nextCompaction.mode = form.compactionMode;
-      else delete nextCompaction.mode;
-      if (parsedCompactionMaxHistoryShare === undefined) delete nextCompaction.maxHistoryShare;
-      else nextCompaction.maxHistoryShare = parsedCompactionMaxHistoryShare;
-      const cleanedCompaction = cleanupObject(nextCompaction);
-      if (cleanedCompaction === undefined) {
-        if (isPlainObject(baseAgent?.compaction)) payload.compaction = null;
-      } else {
-        payload.compaction = cleanedCompaction;
-      }
-    }
 
     setSaving(true);
     try {
@@ -2601,7 +2551,6 @@ export default function Agents() {
   };
 
   const selectedModelDraft = extractModelDraft(selectedAgent?.model);
-  const selectedCompactionDraft = extractCompactionDraft(selectedAgent?.compaction);
   const selectedIdentity = extractIdentityDraft(selectedAgent?.identity);
   const selectedTools = isPlainObject(selectedAgent?.tools) ? selectedAgent.tools : {};
   const selectedSubagents = isPlainObject(selectedAgent?.subagents) ? selectedAgent.subagents : {};
@@ -2858,8 +2807,8 @@ export default function Agents() {
                             <div className="mt-3 space-y-2 text-sm text-gray-600 dark:text-gray-300">
                               <div>主模型（Primary）：<span className="font-medium text-gray-900 dark:text-white">{selectedModelDraft.primary || defaultModelHint || '继承默认'}</span></div>
                               <div>回退模型（Fallbacks）：{selectedModelDraft.fallbacks || '未设置'}</div>
-                              <div>上下文预算（contextTokens）：{selectedAgent?.contextTokens !== undefined ? String(selectedAgent.contextTokens) : (agentDefaults.contextTokens !== undefined ? `继承默认 (${agentDefaults.contextTokens})` : '继承默认')}</div>
-                              <div>压缩模式（compaction.mode）：{selectedCompactionDraft.mode || agentDefaults.compactionMode || '继承默认'}</div>
+                              <div className="flex items-center gap-1">默认上下文预算 <InfoTooltip content={<>对应 <code className="font-mono text-[11px]">agents.defaults.contextTokens</code>，系统级默认值，不支持单 Agent 覆盖</>} />：{agentDefaults.contextTokens !== undefined ? String(agentDefaults.contextTokens) : '未设置'}</div>
+                              <div className="flex items-center gap-1">默认压缩模式 <InfoTooltip content={<>对应 <code className="font-mono text-[11px]">agents.defaults.compaction.mode</code>，系统级默认值</>} />：{agentDefaults.compactionMode || '未设置'}</div>
                               <div>身份名（Name）：{selectedIdentity.name || '未设置'}</div>
                               <div>主题（Theme）：{selectedIdentity.theme || '未设置'}</div>
                               <div>表情（Emoji）：{selectedIdentity.emoji || '未设置'}</div>
@@ -2933,27 +2882,21 @@ export default function Agents() {
                               <div className="mt-1 text-gray-700 dark:text-gray-200">{isPlainObject(selectedAgent.params) && selectedAgent.params.maxTokens !== undefined ? String(selectedAgent.params.maxTokens) : '未覆盖'}</div>
                             </div>
                             <div className="rounded-lg bg-gray-50 dark:bg-gray-900 px-3 py-3">
-                              <div className="text-xs text-gray-400">上下文预算（contextTokens）</div>
+                              <div className="text-xs text-gray-400 flex items-center gap-1">默认上下文预算 <InfoTooltip content={<>对应 <code className="font-mono text-[11px]">agents.defaults.contextTokens</code>，OpenClaw 会与模型真实 contextWindow 取较小值</>} /></div>
                               <div className="mt-1 text-gray-700 dark:text-gray-200">
-                                {selectedAgent?.contextTokens !== undefined
-                                  ? String(selectedAgent.contextTokens)
-                                  : agentDefaults.contextTokens !== undefined
-                                    ? `继承默认 (${agentDefaults.contextTokens})`
-                                    : '继承默认'}
+                                {agentDefaults.contextTokens !== undefined ? String(agentDefaults.contextTokens) : '未设置'}
                               </div>
                             </div>
                             <div className="rounded-lg bg-gray-50 dark:bg-gray-900 px-3 py-3">
-                              <div className="text-xs text-gray-400">压缩模式（compaction.mode）</div>
+                              <div className="text-xs text-gray-400 flex items-center gap-1">默认压缩模式 <InfoTooltip content={<>对应 <code className="font-mono text-[11px]">agents.defaults.compaction.mode</code>，可选 default / safeguard</>} /></div>
                               <div className="mt-1 text-gray-700 dark:text-gray-200">
-                                {selectedCompactionDraft.mode || agentDefaults.compactionMode || '继承默认'}
+                                {agentDefaults.compactionMode || '未设置'}
                               </div>
                             </div>
                             <div className="rounded-lg bg-gray-50 dark:bg-gray-900 px-3 py-3">
-                              <div className="text-xs text-gray-400">历史占比上限（compaction.maxHistoryShare）</div>
+                              <div className="text-xs text-gray-400 flex items-center gap-1">默认历史占比上限 <InfoTooltip content={<>对应 <code className="font-mono text-[11px]">agents.defaults.compaction.maxHistoryShare</code>，取值 0~1</>} /></div>
                               <div className="mt-1 text-gray-700 dark:text-gray-200">
-                                {selectedCompactionDraft.maxHistoryShare
-                                  || (agentDefaults.compactionMaxHistoryShare !== undefined ? String(agentDefaults.compactionMaxHistoryShare) : '')
-                                  || '继承默认'}
+                                {agentDefaults.compactionMaxHistoryShare !== undefined ? String(agentDefaults.compactionMaxHistoryShare) : '未设置'}
                               </div>
                             </div>
                           </div>
@@ -3090,7 +3033,7 @@ export default function Agents() {
                     {detailTab === 'files' && (
                       <div className="space-y-4">
                         <div className={`${modern ? 'rounded-xl border border-sky-200/70 bg-sky-500/10 px-4 py-3 text-sm text-sky-700 dark:border-sky-800/50 dark:text-sky-200' : 'rounded-xl border border-violet-100 bg-violet-50 px-4 py-3 text-sm text-violet-700 dark:border-violet-900/40 dark:bg-violet-950/20 dark:text-violet-200'}`}>
-                          对标官方 <span className="font-mono">Files</span> 面板：这里直接查看并编辑当前 Agent 工作区中的核心文件，避免人格、工具说明与长期记忆继续埋在大段 JSON 里。
+                          对标官方 Files 面板：这里直接查看并编辑当前 Agent 工作区中的核心文件，避免人格、工具说明与长期记忆继续埋在大段 JSON 里。
                         </div>
                         <div className="grid grid-cols-1 xl:grid-cols-[300px,1fr] gap-4">
                           <div className={softPanelClass}>
@@ -3228,7 +3171,8 @@ export default function Agents() {
                     {detailTab === 'capabilities' && (
                       <div className="space-y-4">
                         <div className="rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-700 dark:border-sky-900/40 dark:bg-sky-950/20 dark:text-sky-200">
-                          对齐官方 <span className="font-mono">Skills / Channel Routing / Cron Jobs</span> 心智：Skills 会按当前 Agent 的 <span className="font-mono">workspace</span> 与共享来源重新解析，Channels 只表示把消息路由到它的通道上下文，Cron Jobs 展示绑定到该 Agent 的计划任务；<span className="font-mono">HEARTBEAT.md</span> 仍在 Core Files 中维护。
+                          对齐官方 Skills / Channel Routing / Cron Jobs 心智：Skills 会按当前 Agent 的工作区与共享来源重新解析，Channels 表示消息路由到此 Agent 的通道上下文，Cron Jobs 展示绑定到该 Agent 的计划任务。
+                          <InfoTooltip content={<>技术细节：Skills 依据 <code className="font-mono text-[11px]">workspace</code> 解析，定时任务通过 <code className="font-mono text-[11px]">agentId</code> 绑定，<code className="font-mono text-[11px]">HEARTBEAT.md</code> 在 Core Files 中维护。</>} />
                         </div>
                         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
                           <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 bg-gray-50/80 dark:bg-gray-900">
@@ -3252,7 +3196,7 @@ export default function Agents() {
                           <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 bg-gray-50/80 dark:bg-gray-900">
                             <div className="text-xs text-gray-400">定时任务（Cron Jobs）</div>
                             <div className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">{selectedAgentCronJobs.length}</div>
-                            <div className="mt-1 text-xs text-gray-500">只统计通过 <span className="font-mono">agentId</span> 绑定到当前 Agent 的任务；<span className="font-mono">sessionTarget</span> 决定跑在 main 还是 isolated。</div>
+                            <div className="mt-1 text-xs text-gray-500 flex items-center gap-1">只统计绑定到当前 Agent 的任务。<InfoTooltip content={<>通过 <code className="font-mono text-[11px]">agentId</code> 绑定；<code className="font-mono text-[11px]">sessionTarget</code> 决定跑在 main 还是 isolated。</>} /></div>
                           </div>
                           <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 bg-gray-50/80 dark:bg-gray-900">
                             <div className="text-xs text-gray-400">心跳文件（HEARTBEAT）</div>
@@ -3269,7 +3213,7 @@ export default function Agents() {
                           <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 space-y-3">
                             <div>
                               <h4 className="text-sm font-semibold text-gray-900 dark:text-white">技能快照（Resolved Skills）</h4>
-                              <p className="text-xs text-gray-500 mt-1">按当前 Agent 的 <span className="font-mono">workspace</span> 与共享来源解析有效 Skills；<span className="font-mono">skills.entries</span> 的启用/禁用仍是全局配置。</p>
+                              <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">按当前 Agent 的工作区与共享来源解析有效 Skills；启用/禁用仍是全局配置。<InfoTooltip content={<>依据 <code className="font-mono text-[11px]">workspace</code> 解析；<code className="font-mono text-[11px]">skills.entries</code> 的开关是全局生效的。</>} /></p>
                             </div>
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-gray-500">
                               <div className="rounded-lg border border-gray-100 dark:border-gray-700 px-3 py-2">
@@ -3347,7 +3291,7 @@ export default function Agents() {
                           <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 space-y-3">
                             <div>
                               <h4 className="text-sm font-semibold text-gray-900 dark:text-white">定时任务（Cron Jobs）</h4>
-                              <p className="text-xs text-gray-500 mt-1">这里只展示通过 <span className="font-mono">agentId</span> 绑定到当前 Agent 的任务；<span className="font-mono">sessionTarget</span> 决定运行在 main 还是 isolated，会不会等待心跳周期则由 <span className="font-mono">wakeMode</span> 决定。</p>
+                              <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">展示绑定到当前 Agent 的定时任务。<InfoTooltip content={<>通过 <code className="font-mono text-[11px]">agentId</code> 绑定；<code className="font-mono text-[11px]">sessionTarget</code> 决定 main/isolated，<code className="font-mono text-[11px]">wakeMode</code> 决定是否等待心跳周期。</>} /></p>
                             </div>
                             <div className="space-y-2">
                               {selectedAgentCronJobs.map(job => (
@@ -4292,47 +4236,37 @@ export default function Agents() {
 
                     <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 space-y-4">
                       <div>
-                        <h4 className="text-sm font-semibold text-gray-900 dark:text-white">上下文预算（Context Budget）</h4>
+                        <h4 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-1.5">
+                          上下文预算（Context Budget）
+                          <InfoTooltip size={14} content={<>当前 OpenClaw schema 仅支持 <code className="font-mono text-[11px]">agents.defaults.contextTokens / compaction</code>，不支持单 Agent 级覆盖。如需修改，请前往 System Config。</>} />
+                        </h4>
                         <p className="text-xs text-gray-500 mt-1">
-                          这里覆盖 <span className="font-mono">agents.defaults.contextTokens / compaction</span>；实际运行时仍会与模型真实 <span className="font-mono">contextWindow</span> 取更小值。
+                          这里展示的是系统默认值，所有 Agent 共享相同的上下文预算配置。
                         </p>
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                         <div>
-                          <label className="text-xs text-gray-500">上下文 Token 预算（contextTokens）</label>
-                          <input
-                            value={form.contextTokens}
-                            onChange={e => updateForm({ contextTokens: e.target.value }, 'context')}
-                            placeholder={agentDefaults.contextTokens !== undefined ? `默认 ${agentDefaults.contextTokens}` : '留空=继承默认'}
-                            className="w-full mt-1 px-3 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
-                          />
+                          <label className="text-xs text-gray-500 flex items-center gap-1">默认上下文 Token 预算 <InfoTooltip content={<>字段路径：<code className="font-mono text-[11px]">agents.defaults.contextTokens</code></>} /></label>
+                          <div className="w-full mt-1 px-3 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200">
+                            {agentDefaults.contextTokens !== undefined ? String(agentDefaults.contextTokens) : '未设置'}
+                          </div>
                         </div>
                         <div>
-                          <label className="text-xs text-gray-500">压缩模式（compaction.mode）</label>
-                          <select
-                            value={form.compactionMode}
-                            onChange={e => updateForm({ compactionMode: e.target.value as '' | 'default' | 'safeguard' }, 'context')}
-                            className="w-full mt-1 px-3 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
-                          >
-                            <option value="">继承默认</option>
-                            <option value="default">default</option>
-                            <option value="safeguard">safeguard</option>
-                          </select>
+                          <label className="text-xs text-gray-500 flex items-center gap-1">默认压缩模式 <InfoTooltip content={<>字段路径：<code className="font-mono text-[11px]">agents.defaults.compaction.mode</code>，可选 default / safeguard</>} /></label>
+                          <div className="w-full mt-1 px-3 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200">
+                            {agentDefaults.compactionMode || '未设置'}
+                          </div>
                         </div>
                         <div>
-                          <label className="text-xs text-gray-500">历史占比上限（compaction.maxHistoryShare）</label>
-                          <input
-                            value={form.compactionMaxHistoryShare}
-                            onChange={e => updateForm({ compactionMaxHistoryShare: e.target.value }, 'context')}
-                            placeholder={agentDefaults.compactionMaxHistoryShare !== undefined ? `默认 ${agentDefaults.compactionMaxHistoryShare}` : '例如 0.5'}
-                            className="w-full mt-1 px-3 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
-                          />
+                          <label className="text-xs text-gray-500 flex items-center gap-1">默认历史占比上限 <InfoTooltip content={<>字段路径：<code className="font-mono text-[11px]">agents.defaults.compaction.maxHistoryShare</code>，取值 0~1</>} /></label>
+                          <div className="w-full mt-1 px-3 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200">
+                            {agentDefaults.compactionMaxHistoryShare !== undefined ? String(agentDefaults.compactionMaxHistoryShare) : '未设置'}
+                          </div>
                         </div>
                       </div>
-                      <div className="text-[11px] text-gray-500 leading-relaxed">
-                        当前默认：contextTokens = {agentDefaults.contextTokens !== undefined ? String(agentDefaults.contextTokens) : '未设置'}，
-                        compaction.mode = {agentDefaults.compactionMode || '未设置'}，
-                        compaction.maxHistoryShare = {agentDefaults.compactionMaxHistoryShare !== undefined ? String(agentDefaults.compactionMaxHistoryShare) : '未设置'}。
+                      <div className="text-[11px] text-gray-500 leading-relaxed flex items-center gap-1">
+                        旧版面板误写入的单 Agent 上下文配置会在启动或保存时自动清理。
+                        <InfoTooltip content={<>具体为单 Agent 级的 <code className="font-mono text-[11px]">contextTokens</code> 和 <code className="font-mono text-[11px]">compaction</code> 字段，会被自动移除以避免 OpenClaw 配置校验错误。</>} />
                       </div>
                     </div>
                   </div>

@@ -8,6 +8,7 @@ import {
   Monitor, HardDrive, FileText, Archive, RotateCcw,
   CheckCircle, AlertTriangle, Package, Box, Shield, Command, Search
 } from 'lucide-react';
+import InfoTooltip from '../components/InfoTooltip';
 import { useI18n } from '../i18n';
 
 const KNOWN_PROVIDERS: { id: string; name: string; nameZh?: string; baseUrl: string; apiType?: string; apiKeyUrl: string; models: string[]; category: 'cn' | 'intl' | 'agg' }[] = [
@@ -892,7 +893,7 @@ export default function SystemConfig() {
               <CfgSection
                 title="Agent 默认设置"
                 icon={Brain}
-                description="这里控制所有未单独覆盖的 Agent 默认上下文预算；单个 Agent 可在 Agent 管理页继续覆盖 contextTokens / compaction。"
+                description="这里控制所有 Agent 共享的默认上下文预算；当前 OpenClaw schema 不支持单 Agent 级 contextTokens / compaction 覆盖。"
                 defaultExpanded
                 fields={[
                   {
@@ -1040,20 +1041,19 @@ export default function SystemConfig() {
             { path: 'tools.sessions.visibility', label: '会话可见性', type: 'select' as const, options: ['self', 'tree', 'agent', 'all'], help: '官方枚举：self=仅当前会话，tree=当前会话及其子会话，agent=当前 Agent 的全部会话，all=全部会话。' },
             { path: 'session.dmScope', label: '私聊隔离范围', type: 'select' as const, options: ['main', 'per-peer', 'per-channel-peer', 'per-account-channel-peer'] },
           ]} getVal={getVal} setVal={setVal} />
-          <CfgSection title="Web 搜索工具" icon={Search} description="tools.web.search — 控制联网搜索行为" fields={[
+          <CfgSection title="Web 搜索工具" icon={Search} description="控制联网搜索行为" fields={[
             { path: 'tools.web.search.provider', label: '搜索提供商', type: 'select' as const, options: ['brave', 'perplexity', 'grok', 'gemini', 'kimi'], help: '当前 OpenClaw 官方支持 brave / perplexity / grok / gemini / kimi。' },
             { path: 'tools.web.search.apiKey', label: 'API Key', type: 'password' as const, help: '搜索服务的密钥，优先于 env.vars 中的同名变量。' },
             { path: 'tools.web.search.maxResults', label: '最大结果数', type: 'number' as const, placeholder: '5', integer: true, min: 1, max: 10, help: '单次搜索返回的最多条目数（官方范围 1-10，默认 5）。' },
           ]} getVal={getVal} setVal={setVal} />
-          <CfgSection title="命令执行安全 (tools.exec)" icon={Terminal} description="tools.exec — 控制 exec/shell 工具的安全边界" fields={[
+          <CfgSection title="命令执行安全" icon={Terminal} description="控制 exec/shell 工具的安全边界" fields={[
             { path: 'tools.exec.timeoutSec', label: '超时（秒）', type: 'number' as const, placeholder: '30', integer: true, min: 1, help: '单次命令最大执行时长，超时后进程会被强制终止。' },
             { path: 'tools.exec.security', label: '安全模式', type: 'select' as const, options: ['deny', 'allowlist', 'full'], help: 'deny = 默认拒绝；allowlist = 仅 safeBins 白名单；full = 完全放开（高风险）。' },
             { path: 'tools.exec.ask', label: '审批模式', type: 'select' as const, options: ['off', 'on-miss', 'always'], help: 'off = 不额外审批；on-miss = 未命中白名单时审批；always = 总是审批。' },
           ]} getVal={getVal} setVal={setVal} />
           <div className="page-modern-panel p-5 space-y-2">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold text-gray-900 dark:text-white">命令白名单（tools.exec.safeBins）</h3>
-              <code className="text-[9px] text-gray-400 font-mono bg-gray-50 dark:bg-gray-900 px-1.5 py-0.5 rounded border border-gray-100 dark:border-gray-800">tools.exec.safeBins</code>
+              <h3 className="text-sm font-bold text-gray-900 dark:text-white flex items-center gap-1.5">命令白名单 <InfoTooltip size={14} content={<>字段路径：<code className="font-mono text-[11px]">tools.exec.safeBins</code></>} /></h3>
             </div>
             <input
               value={(() => {
@@ -1076,8 +1076,7 @@ export default function SystemConfig() {
           <ToolGovernanceSection config={config} updateConfig={updateConfig} />
           <div className={`${modern ? 'page-modern-panel p-5 space-y-2' : 'bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700/50 p-5 space-y-2'}`}>
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold text-gray-900 dark:text-white">Agent 间委托白名单</h3>
-              <code className="text-[9px] text-gray-400 font-mono bg-gray-50 dark:bg-gray-900 px-1.5 py-0.5 rounded border border-gray-100 dark:border-gray-800">tools.agentToAgent.allow</code>
+              <h3 className="text-sm font-bold text-gray-900 dark:text-white flex items-center gap-1.5">Agent 间委托白名单 <InfoTooltip size={14} content={<>字段路径：<code className="font-mono text-[11px]">tools.agentToAgent.allow</code></>} /></h3>
             </div>
             <input
               value={(() => {
@@ -1912,8 +1911,7 @@ function CfgSection({ title, icon: Icon, description, defaultExpanded = false, f
           {fields.map(field => (
             <div key={field.path}>
               <div className="flex items-center justify-between mb-1.5">
-                <label className="text-xs font-semibold text-gray-700 dark:text-gray-300">{field.label}</label>
-                <code className="text-[9px] text-gray-400 font-mono bg-gray-50 dark:bg-gray-900 px-1.5 py-0.5 rounded border border-gray-100 dark:border-gray-800">{field.path}</code>
+                <label className="text-xs font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-1">{field.label} <InfoTooltip content={<>字段路径：<code className="font-mono text-[11px]">{field.path}</code></>} /></label>
               </div>
               
               {field.type === 'toggle' ? (
@@ -2086,7 +2084,8 @@ function SessionIsolationSection({
         <div className="flex-1">
           <span className="text-sm font-bold text-gray-900 dark:text-white block">私聊上下文隔离</span>
           <span className="text-[10px] text-gray-400 mt-0.5 block leading-relaxed">
-            配置 <span className="font-mono">session.dmScope</span>，控制 OpenClaw 如何为私聊拆分会话键。
+            控制 OpenClaw 如何为私聊拆分会话键。
+            <InfoTooltip content={<>对应字段 <code className="font-mono text-[11px]">session.dmScope</code></>} />
           </span>
           <span className="text-[10px] text-gray-400 mt-1 block">
             当前：{rawDmScope || '未显式设置（运行时等价 main）'}
@@ -2598,8 +2597,7 @@ function BrowserControlSection({
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <label className="text-xs font-semibold text-gray-700 dark:text-gray-300">启用浏览器控制</label>
-                <code className="text-[9px] text-gray-400 font-mono bg-gray-50 dark:bg-gray-900 px-1.5 py-0.5 rounded border border-gray-100 dark:border-gray-800">browser.enabled</code>
+                <label className="text-xs font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-1">启用浏览器控制 <InfoTooltip content={<>字段路径：<code className="font-mono text-[11px]">browser.enabled</code></>} /></label>
               </div>
               <div className="flex items-center gap-3 p-3 rounded-lg border border-gray-100 dark:border-gray-800 bg-gray-50/30 dark:bg-gray-900/30">
                 <button
@@ -2613,14 +2611,14 @@ function BrowserControlSection({
                 </span>
               </div>
               <p className="mt-1.5 text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
-                关闭后等价于方案 A，并会移除当前显式的 <span className="font-mono">browser.defaultProfile</span>；后续再次开启时，会自动回到更安全的 <span className="font-mono">openclaw</span>。
+                关闭后 Agent 将无法使用浏览器工具；后续再次开启时，会自动使用安全隔离 Profile。
+                <InfoTooltip content={<>关闭会移除 <code className="font-mono text-[11px]">browser.defaultProfile</code>；重新开启时自动设为 <code className="font-mono text-[11px]">openclaw</code>（独立 Profile）。</>} />
               </p>
             </div>
 
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <label className="text-xs font-semibold text-gray-700 dark:text-gray-300">默认浏览器 Profile</label>
-                <code className="text-[9px] text-gray-400 font-mono bg-gray-50 dark:bg-gray-900 px-1.5 py-0.5 rounded border border-gray-100 dark:border-gray-800">browser.defaultProfile</code>
+                <label className="text-xs font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-1">默认浏览器 Profile <InfoTooltip content={<>字段路径：<code className="font-mono text-[11px]">browser.defaultProfile</code></>} /></label>
               </div>
               <div className="space-y-2">
                 <div className="relative">
