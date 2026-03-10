@@ -375,7 +375,7 @@ const CHANNEL_DEFS: ChannelDef[] = [
   { id: 'feishu', label: '飞书 / Lark', description: '飞书机器人 WebSocket (插件)', type: 'plugin',
     configFields: [
       { key: 'domain', label: '站点域（Domain）', type: 'select', options: ['feishu', 'lark'], help: '国际版 Lark 场景可切到 lark；不确定时保持 feishu', defaultValue: 'feishu', section: 'access' },
-      { key: 'requireMention', label: '群聊回复策略', type: 'select', options: ['true', 'false', 'open'], help: 'true = 仅 @ 机器人；false = 放宽触发；open = 以插件支持的开放模式处理', defaultValue: 'true', section: 'access' },
+      { key: 'requireMention', label: '群聊是否必须 @', type: 'select', options: ['true', 'false'], help: '仅接受 true / false；open 属于 groupPolicy，不属于本字段', defaultValue: true, section: 'access' },
       { key: 'groupPolicy', label: '群组准入策略', type: 'select', options: ['open', 'allowlist', 'closed'], help: 'open = 所有群可用；allowlist = 仅白名单；closed = 禁止群聊', defaultValue: 'open', section: 'access' },
       { key: 'dmPolicy', label: '私聊准入策略', type: 'select', options: ['pairing', 'open', 'allowlist'], help: 'pairing = 需先配对；open = 所有私聊可用；allowlist = 仅白名单', defaultValue: 'pairing', section: 'access' },
       { key: 'groupAllowFrom', label: '群聊白名单', type: 'textarea', placeholder: 'oc_xxx, oc_yyy', help: '支持英文逗号、中文逗号或换行分隔；仅 groupPolicy=allowlist 时生效，保存时会写成数组', section: 'access', rows: 3 },
@@ -778,6 +778,28 @@ export default function Channels() {
   };
   const currentFeishuConfig = getEffectiveChannelConfig('feishu');
   const currentFeishuVariant = getActiveFeishuVariant(ocConfig);
+  const currentFeishuRequireMentionRaw = currentFeishuConfig?.requireMention;
+  const currentFeishuRequireMentionLiteral = typeof currentFeishuRequireMentionRaw === 'string'
+    ? currentFeishuRequireMentionRaw.trim()
+    : '';
+  const currentFeishuRequireMentionValue = currentFeishuRequireMentionRaw === true
+    ? 'true'
+    : currentFeishuRequireMentionRaw === false
+      ? 'false'
+      : currentFeishuRequireMentionLiteral.toLowerCase() === 'true'
+        ? 'true'
+        : currentFeishuRequireMentionLiteral.toLowerCase() === 'false'
+          ? 'false'
+          : '';
+  const currentFeishuRequireMentionInvalid = currentFeishuRequireMentionRaw !== undefined
+    && currentFeishuRequireMentionRaw !== null
+    && !(typeof currentFeishuRequireMentionRaw === 'string' && currentFeishuRequireMentionLiteral === '')
+    && currentFeishuRequireMentionValue === '';
+  const currentFeishuRequireMentionHelp = currentFeishuVariant === 'official'
+    ? '官方版当前按布尔开关处理：true = 群聊必须 @ 机器人；false = 允许不 @。open 属于 groupPolicy，不属于本字段。'
+    : currentFeishuVariant === 'clawteam'
+      ? 'ClawTeam 版在面板中同样按布尔开关处理：true = 群聊必须 @ 机器人；false = 放宽触发。open 属于 groupPolicy，不属于本字段。'
+      : '按布尔开关处理：true = 群聊必须 @ 机器人；false = 允许不 @。open 属于 groupPolicy，不属于本字段。';
   const currentFeishuAccounts = listFeishuAccountIDs(currentFeishuConfig);
   const currentFeishuDefaultAccount = pickFeishuDefaultAccount(currentFeishuConfig);
   const currentFeishuEditingAccountId = currentFeishuAccounts.includes(feishuActiveAccountId)
@@ -987,6 +1009,11 @@ export default function Channels() {
         return;
       }
 
+      if (channelId === 'feishu' && field.key === 'requireMention') {
+        setNestedValue(draft, field.key, trimmed === 'true');
+        return;
+      }
+
       if (channelId === 'feishu' && field.key === 'groupAllowFrom') {
         setNestedValue(draft, field.key, parseDelimitedList(rawValue));
         return;
@@ -1042,6 +1069,9 @@ export default function Channels() {
     setSaving(true); setMsg('');
     try {
       const chData: any = deepClone(getEffectiveChannelConfig(currentDef.id));
+      if (currentDef.id === 'feishu' && currentFeishuRequireMentionInvalid) {
+        throw new Error(`requireMention 仅支持 true/false，当前值为 ${JSON.stringify(currentFeishuRequireMentionRaw)}`);
+      }
       const enabledState = isChannelEnabled(currentDef.id);
       if (currentDef.id === 'feishu' && String(chData.groupPolicy || '').trim() !== 'allowlist') {
         delete chData.groupAllowFrom;
@@ -1280,8 +1310,14 @@ export default function Channels() {
     }
 
     const rawCurrentVal = getFieldValue(channelId, field.key);
+    const fieldOptions = channelId === 'feishu' && field.key === 'requireMention'
+      ? ['true', 'false']
+      : field.options;
+    const fieldHelp = channelId === 'feishu' && field.key === 'requireMention'
+      ? currentFeishuRequireMentionHelp
+      : field.help;
     const currentVal = channelId === 'feishu' && field.key === 'requireMention'
-      ? (rawCurrentVal === true ? 'true' : rawCurrentVal === false ? 'false' : (rawCurrentVal ?? ''))
+      ? currentFeishuRequireMentionValue
       : rawCurrentVal;
     const isFullWidth =
       field.type === 'textarea'
@@ -1349,7 +1385,7 @@ export default function Channels() {
                   : 'border-gray-200 dark:border-gray-800 text-gray-400'}`}
             >
               <option value="">{defaultHint ? `未配置（默认 ${defaultHint}）` : '未配置'}</option>
-              {field.options?.map(opt => (
+              {fieldOptions?.map(opt => (
                 <option key={opt} value={opt}>{opt}</option>
               ))}
             </select>
@@ -1387,8 +1423,8 @@ export default function Channels() {
           </div>
         )}
 
-        {field.type !== 'toggle' && field.help && (
-          <p className="mt-1.5 text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">{field.help}</p>
+        {field.type !== 'toggle' && fieldHelp && (
+          <p className="mt-1.5 text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">{fieldHelp}</p>
         )}
 
         {defaultHint && (
@@ -2368,6 +2404,13 @@ export default function Channels() {
                             <h4 className="text-sm font-semibold text-gray-900 dark:text-white">{sectionMeta.title}</h4>
                             <p className="text-xs text-gray-500 mt-1 leading-relaxed">{sectionMeta.description}</p>
                           </div>
+                          {sectionKey === 'access' && currentFeishuRequireMentionInvalid && (
+                            <div className="rounded-lg border border-amber-200 dark:border-amber-800/40 bg-amber-50/80 dark:bg-amber-900/10 px-4 py-3 text-xs text-amber-700 dark:text-amber-300 leading-relaxed">
+                              检测到当前配置中的 <span className="font-mono">requireMention</span> 为非法值 <span className="font-mono">{JSON.stringify(currentFeishuRequireMentionRaw)}</span>。
+                              面板现在只接受 <span className="font-mono">true</span> / <span className="font-mono">false</span>；
+                              如需开放群聊，请改用 <span className="font-mono">groupPolicy=open</span>。
+                            </div>
+                          )}
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-4">
                             {visibleFields.map(field => renderConfigField(currentDef.id, field))}
                           </div>

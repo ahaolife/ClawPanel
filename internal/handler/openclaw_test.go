@@ -942,6 +942,22 @@ func TestNormalizeFeishuChannelConfigDropsLegacyDMScope(t *testing.T) {
 	}
 }
 
+func TestNormalizeFeishuChannelConfigRejectsInvalidRequireMention(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]interface{}{
+		"requireMention": "open",
+	}
+
+	err := normalizeFeishuChannelConfigInPlace(input)
+	if err == nil {
+		t.Fatal("expected invalid requireMention to be rejected")
+	}
+	if !strings.Contains(err.Error(), "requireMention") {
+		t.Fatalf("expected error to mention requireMention, got %v", err)
+	}
+}
+
 func TestSaveChannelRejectsQQWhenPluginMissing(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -1009,6 +1025,29 @@ func TestSaveChannelQQReturnsMessageWithoutProcessManager(t *testing.T) {
 	}
 	if ok, _ := resp["ok"].(bool); !ok {
 		t.Fatalf("expected ok response, got %#v", resp)
+	}
+}
+
+func TestSaveChannelRejectsInvalidFeishuRequireMention(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	r := gin.New()
+	r.PUT("/openclaw/channels/:id", SaveChannel(cfg, nil))
+
+	body := []byte(`{"enabled":true,"requireMention":"open","groupPolicy":"open"}`)
+	req := httptest.NewRequest(http.MethodPut, "/openclaw/channels/feishu", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "requireMention") {
+		t.Fatalf("expected error to mention requireMention, got %s", w.Body.String())
 	}
 }
 
