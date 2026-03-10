@@ -291,6 +291,8 @@ func runServer(stopCh chan struct{}) {
 
 			// 独立更新工具
 			auth.POST("/panel/update-token", handler.GenerateUpdateToken(cfg, cfg.Port))
+			auth.Any("/panel/updater", handler.ProxyUpdater(cfg))
+			auth.Any("/panel/updater/*path", handler.ProxyUpdater(cfg))
 			auth.GET("/panel/update-history", handler.GetUpdateHistory(cfg))
 
 			// 事件日志

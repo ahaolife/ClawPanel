@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -673,17 +675,50 @@ func GenerateUpdateToken(cfg *config.Config, panelPort int) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := updaterPkg.GenerateToken(panelPort)
 		updaterPort := updaterPkg.UpdaterPort
-		// Extract hostname from request Host (may or may not include port)
 		host := c.Request.Host
-		if idx := strings.LastIndex(host, ":"); idx > 0 {
-			host = host[:idx]
+		scheme := "http"
+		if c.Request.TLS != nil {
+			scheme = "https"
+		}
+		if proto := strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")); proto != "" {
+			scheme = proto
 		}
 		c.JSON(http.StatusOK, gin.H{
 			"ok":          true,
 			"token":       token,
 			"updaterPort": updaterPort,
-			"updaterURL":  fmt.Sprintf("http://%s:%d/updater?token=%s", host, updaterPort, token),
+			"updaterURL":  fmt.Sprintf("%s://%s/api/panel/updater?token=%s", scheme, host, token),
 		})
+	}
+}
+
+func ProxyUpdater(cfg *config.Config) gin.HandlerFunc {
+	target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", updaterPkg.UpdaterPort))
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		path := strings.TrimPrefix(req.URL.Path, "/api/panel/updater")
+		if path == "" {
+			path = "/updater"
+		}
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		if strings.HasPrefix(path, "/api/") {
+			req.URL.Path = "/updater" + path
+		} else {
+			req.URL.Path = path
+		}
+		req.Host = target.Host
+	}
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("当前无法使用此页面，请稍后重试；若问题持续存在，请返回面板重新点击“前往更新”。"))
+	}
+	return func(c *gin.Context) {
+		proxy.ServeHTTP(c.Writer, c.Request)
 	}
 }
 

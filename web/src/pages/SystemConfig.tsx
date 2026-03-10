@@ -1593,18 +1593,31 @@ function PanelUpdateSection() {
   const [updateHistory, setUpdateHistory] = useState<any[]>([]);
   const [showHistory, setShowHistory] = useState(false);
 
-  useEffect(() => {
-    api.getPanelVersion().then(r => {
+  const loadPanelVersion = async () => {
+    try {
+      const r = await api.getPanelVersion();
       if (r.ok) {
         setPanelVersion(r.version);
         setEdition(r.edition || 'pro');
       }
-    }).catch(() => {});
+    } catch {}
+  };
+
+  useEffect(() => {
+    loadPanelVersion();
+    const onFocus = () => { loadPanelVersion(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
   }, []);
 
   const checkPanelUpdate = async () => {
     setCheckingPanel(true);
     try {
+      await loadPanelVersion();
       const r = await api.checkPanelUpdate();
       if (r.ok) setPanelUpdateInfo(r);
       else setPanelUpdateInfo({ error: r.error || '检查失败' });
@@ -1706,6 +1719,12 @@ function PanelUpdateSection() {
             <AlertTriangle size={14} className="shrink-0" />
             <span>发现新版本 <strong>{panelUpdateInfo.latestVersion}</strong>（发布于 {panelUpdateInfo.releaseTime ? new Date(panelUpdateInfo.releaseTime).toLocaleString('zh-CN') : '-'}）</span>
           </div>
+          {edition === 'lite' && (
+            <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-blue-50 dark:bg-blue-900/20 text-xs text-blue-700 dark:text-blue-300 border border-blue-100 dark:border-blue-900/30">
+              <Shield size={14} className="shrink-0" />
+              <span>Lite 面板内更新默认下载当前发行形态对应的面板更新包，不会覆盖你的现有数据目录与通道配置。</span>
+            </div>
+          )}
           <div className="bg-gray-50 dark:bg-gray-900/50 rounded-xl p-4 border border-gray-100 dark:border-gray-800 text-xs text-gray-700 dark:text-gray-300 whitespace-pre-wrap max-h-48 overflow-y-auto leading-relaxed">
             {panelUpdateInfo.releaseNote}
           </div>
