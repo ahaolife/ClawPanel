@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { api } from '../lib/api';
 import { Plus, RefreshCw, Save, Trash2, ArrowUp, ArrowDown, Route, Bot, Settings, Brain, Shield, ChevronDown, ChevronRight, Sparkles, FileText } from 'lucide-react';
@@ -1324,7 +1324,7 @@ function buildPreviewExplanation(result: PreviewResult | null, bindings: Binding
   };
 }
 
-export default function Agents() {
+function AgentsPage() {
   const { uiMode } = (useOutletContext() as { uiMode?: 'modern' }) || {};
   const modern = uiMode === 'modern';
   const [loading, setLoading] = useState(true);
@@ -4831,3 +4831,8 @@ export default function Agents() {
     </div>
   );
 }
+
+const Agents = memo(AgentsPage);
+Agents.displayName = 'Agents';
+
+export default Agents;

@@ -22,6 +22,8 @@ import (
 //     但当前 OpenClaw schema 不支持单 Agent 级上下文覆盖，需要清理。
 //  6. 旧版 Agent 页面曾把 tools.agentToAgent / tools.sessions.visibility 写到
 //     agents.list[].tools 下，但当前 OpenClaw 仅支持全局 tools 配置，需要清理。
+//  7. 历史版本曾把 bindings 写进 agents.bindings，但当前 OpenClaw 仅接受顶层 bindings，
+//     需要迁移/清理旧字段。
 func NormalizeOpenClawConfig(cfg map[string]interface{}) bool {
 	return normalizeOpenClawConfig(cfg, "")
 }
@@ -40,6 +42,14 @@ func normalizeOpenClawConfig(cfg map[string]interface{}, openClawDir string) boo
 
 	agents, ok := cfg["agents"].(map[string]interface{})
 	if ok && agents != nil {
+		if legacyBindings, exists := agents["bindings"]; exists {
+			if shouldPromoteLegacyBindings(cfg["bindings"], legacyBindings) {
+				cfg["bindings"] = cloneJSONValue(legacyBindings)
+			}
+			delete(agents, "bindings")
+			changed = true
+		}
+
 		if normalizeLegacyAgentDefault(agents, openClawDir) {
 			changed = true
 		}
@@ -208,6 +218,52 @@ func normalizeOpenClawConfig(cfg map[string]interface{}, openClawDir string) boo
 	}
 
 	return changed
+}
+
+func shouldPromoteLegacyBindings(current, legacy interface{}) bool {
+	if legacy == nil {
+		return false
+	}
+	if current == nil {
+		return true
+	}
+	return bindingValueLen(current) == 0 && bindingValueLen(legacy) > 0
+}
+
+func bindingValueLen(v interface{}) int {
+	switch x := v.(type) {
+	case []interface{}:
+		return len(x)
+	case []map[string]interface{}:
+		return len(x)
+	default:
+		return 0
+	}
+}
+
+func cloneJSONValue(v interface{}) interface{} {
+	switch x := v.(type) {
+	case map[string]interface{}:
+		cp := make(map[string]interface{}, len(x))
+		for key, value := range x {
+			cp[key] = cloneJSONValue(value)
+		}
+		return cp
+	case []interface{}:
+		cp := make([]interface{}, len(x))
+		for i, value := range x {
+			cp[i] = cloneJSONValue(value)
+		}
+		return cp
+	case []map[string]interface{}:
+		cp := make([]interface{}, 0, len(x))
+		for _, item := range x {
+			cp = append(cp, cloneJSONValue(item))
+		}
+		return cp
+	default:
+		return x
+	}
 }
 
 func stripUnsupportedPerAgentToolOverrides(tools map[string]interface{}) bool {

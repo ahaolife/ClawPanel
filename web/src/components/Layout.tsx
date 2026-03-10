@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, ScrollText, Radio, Sparkles, Clock, Settings,
@@ -55,6 +55,20 @@ export default function Layout({ onLogout, napcatStatus, wechatStatus, openclawS
   const navigate = useNavigate();
   const location = useLocation();
   const enableAgents = import.meta.env.VITE_FEATURE_AGENTS !== 'false';
+  const reducedPerfMode = useMemo(() => {
+    const path = location.pathname;
+    return [
+      '/agents',
+      '/channels',
+      '/skills',
+      '/workflows',
+      '/workspace',
+      '/config',
+      '/sessions',
+      '/logs',
+      '/cron',
+    ].some(prefix => path === prefix || path.startsWith(`${prefix}/`));
+  }, [location.pathname]);
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
   const [taskLogs, setTaskLogs] = useState<Record<string, string[]>>({});
   const [searchQuery, setSearchQuery] = useState('');
@@ -129,6 +143,7 @@ export default function Layout({ onLogout, napcatStatus, wechatStatus, openclawS
     return false;
   });
   const [open, setOpen] = useState(false);
+  const outletContext = useMemo(() => ({ uiMode: 'modern' as const }), []);
 
   useEffect(() => {
     document.body.dataset.uiMode = 'modern';
@@ -136,6 +151,13 @@ export default function Layout({ onLogout, napcatStatus, wechatStatus, openclawS
       delete document.body.dataset.uiMode;
     };
   }, []);
+
+  useEffect(() => {
+    document.body.dataset.uiPerf = reducedPerfMode ? 'reduced' : 'default';
+    return () => {
+      delete document.body.dataset.uiPerf;
+    };
+  }, [reducedPerfMode]);
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
@@ -428,7 +450,7 @@ export default function Layout({ onLogout, napcatStatus, wechatStatus, openclawS
             </div>
           </div>
         )}
-        <div className="flex-1 overflow-y-auto ui-modern-scrollbar p-3 pb-24 sm:p-4 sm:pb-28 lg:p-6 lg:pb-6 xl:p-7"><Outlet context={{ uiMode: 'modern' }} /></div>
+        <div className="flex-1 overflow-y-auto ui-modern-scrollbar p-3 pb-24 sm:p-4 sm:pb-28 lg:p-6 lg:pb-6 xl:p-7"><Outlet context={outletContext} /></div>
       </main>
       <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-blue-100/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.9),rgba(239,246,255,0.84))] px-3 pb-[max(0.6rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur-2xl dark:border-blue-400/15 dark:bg-[linear-gradient(180deg,rgba(7,17,31,0.96),rgba(11,26,46,0.92))] lg:hidden">
         <div className="grid grid-cols-5 gap-2">

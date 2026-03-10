@@ -3569,6 +3569,59 @@ func TestSaveBindingsAcceptsLegacyNameAlias(t *testing.T) {
 	}
 }
 
+func TestSaveBindingsRemovesLegacyAgentsBindingsKey(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	writeJSON(t, filepath.Join(dir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"list": []interface{}{
+				map[string]interface{}{"id": "main"},
+			},
+			"bindings": []interface{}{
+				map[string]interface{}{
+					"agentId": "main",
+					"match": map[string]interface{}{
+						"channel": "legacy",
+					},
+				},
+			},
+		},
+	})
+
+	r := gin.New()
+	r.PUT("/openclaw/bindings", SaveOpenClawBindings(cfg))
+	body := []byte(`{"bindings":[{"agentId":"main","match":{"channel":"qq"}}]}`)
+	req := httptest.NewRequest(http.MethodPut, "/openclaw/bindings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	saved, err := cfg.ReadOpenClawJSON()
+	if err != nil {
+		t.Fatalf("read openclaw.json: %v", err)
+	}
+	agents, _ := saved["agents"].(map[string]interface{})
+	if _, ok := agents["bindings"]; ok {
+		t.Fatalf("expected legacy agents.bindings to be removed, got %#v", agents["bindings"])
+	}
+	bindings, _ := saved["bindings"].([]interface{})
+	if len(bindings) != 1 {
+		t.Fatalf("expected one top-level binding, got %#v", saved["bindings"])
+	}
+	binding, _ := bindings[0].(map[string]interface{})
+	match, _ := binding["match"].(map[string]interface{})
+	if got := strings.TrimSpace(getString(match, "channel")); got != "qq" {
+		t.Fatalf("expected saved binding channel=qq, got %#v", match["channel"])
+	}
+}
+
 func TestSaveCronJobsFillsSessionTargetWithDefaultAgent(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)

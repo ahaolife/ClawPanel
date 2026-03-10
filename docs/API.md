@@ -309,6 +309,7 @@ Authorization: Bearer <token>
 > - top-level 公开字段为 `type`（`route`/`acp`）、`comment`、`agentId`、`acp`
 > - 旧字段 `agent` 仍会在保存时被标准化为 `agentId`
 > - 旧字段 `name` 会作为 `comment` 别名兼容读取；重新保存时统一写成 `comment`
+> - 历史 `agents.bindings` 仍会被兼容读取并迁移到顶层 `bindings`；当前面板保存时只写顶层 `bindings`
 
 ### POST `/api/openclaw/route/preview`
 路由预览。根据 `meta` 返回命中 Agent、命中规则和 trace。

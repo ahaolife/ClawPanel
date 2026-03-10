@@ -711,8 +711,7 @@ func setBindingsToConfig(ocConfig, agentsCfg map[string]interface{}, bindings []
 		ocConfig["bindings"] = mapSliceToAny(normalized)
 	}
 	if agentsCfg != nil {
-		// 向后兼容旧实现：同步写入 agents.bindings
-		agentsCfg["bindings"] = mapSliceToAny(normalized)
+		delete(agentsCfg, "bindings")
 	}
 }
 
