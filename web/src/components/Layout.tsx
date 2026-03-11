@@ -77,6 +77,14 @@ export default function Layout({ onLogout, napcatStatus, wechatStatus, openclawS
 
   useEffect(() => { loadTasks(); }, [loadTasks]);
 
+  useEffect(() => {
+	if (!tasks.some(task => task.status === 'running' || task.status === 'pending')) return;
+	const timer = setInterval(() => {
+	  loadTasks();
+	}, 2500);
+	return () => clearInterval(timer);
+  }, [tasks, loadTasks]);
+
   // Listen for WebSocket task events
   useEffect(() => {
     if (!wsMessages || wsMessages.length === 0) return;

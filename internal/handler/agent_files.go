@@ -70,9 +70,16 @@ func resolveAgentWorkspacePath(cfg *config.Config, agentID string) string {
 
 	candidates := []string{
 		filepath.Join(filepath.Dir(cfg.OpenClawDir), "workspaces", agentID),
+		filepath.Join(filepath.Dir(cfg.OpenClawDir), "workspace", agentID),
+		filepath.Join(cfg.OpenClawDir, "workspaces", agentID),
+		filepath.Join(cfg.OpenClawDir, "workspace", agentID),
 	}
 	if cfg.OpenClawWork != "" {
-		candidates = append(candidates, filepath.Join(cfg.OpenClawWork, agentID))
+		candidates = append(candidates,
+			filepath.Join(cfg.OpenClawWork, agentID),
+			filepath.Join(cfg.OpenClawWork, "workspaces", agentID),
+			filepath.Join(cfg.OpenClawWork, "workspace", agentID),
+		)
 	}
 	for _, candidate := range candidates {
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
@@ -144,18 +151,27 @@ func managedAgentWorkspaceRoots(cfg *config.Config) []string {
 	baseRoot := filepath.Dir(cfg.OpenClawDir)
 	roots := []string{
 		filepath.Join(baseRoot, "workspaces"),
+		filepath.Join(baseRoot, "workspace"),
 		filepath.Join(cfg.OpenClawDir, "workspaces"),
+		filepath.Join(cfg.OpenClawDir, "workspace"),
 	}
 	if cfg.OpenClawWork != "" {
-		roots = append(roots, cfg.OpenClawWork)
+		roots = append(roots,
+			cfg.OpenClawWork,
+			filepath.Join(cfg.OpenClawWork, "workspaces"),
+			filepath.Join(cfg.OpenClawWork, "workspace"),
+		)
 	}
 	// 将 agents.list 中显式配置的绝对 workspace 的父目录也视为受管根，
 	// 支持 workspace 放在外部硬盘等 OpenClawDir 之外的位置。
 	ocConfig, _ := cfg.ReadOpenClawJSON()
 	for _, item := range parseAgentsListFromConfig(ocConfig) {
 		ws := strings.TrimSpace(toString(item["workspace"]))
-		if ws == "" || !filepath.IsAbs(ws) {
+		if ws == "" {
 			continue
+		}
+		if !filepath.IsAbs(ws) {
+			ws = filepath.Join(filepath.Dir(cfg.OpenClawDir), ws)
 		}
 		parent := filepath.Dir(filepath.Clean(ws))
 		dup := false
