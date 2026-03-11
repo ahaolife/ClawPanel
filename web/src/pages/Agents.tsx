@@ -1330,6 +1330,7 @@ export default function Agents() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
+  const [identityImportMsg, setIdentityImportMsg] = useState('');
 
   const [workbenchView, setWorkbenchView] = useState<AgentsWorkbenchView>('directory');
   const [selectedAgentId, setSelectedAgentId] = useState('');
@@ -1616,6 +1617,7 @@ export default function Agents() {
     setSandboxClearIntent(false);
     setSaveAttempted(false);
     setStructuredTouched(DEFAULT_AGENT_STRUCTURED_TOUCHED);
+    setIdentityImportMsg('');
   };
 
   const skillsLoadSeqRef = useRef(0);
@@ -1887,6 +1889,7 @@ export default function Agents() {
 
   const openCreate = (section: AgentFormSection = 'basic') => {
     setMsg('');
+    setIdentityImportMsg('');
     setMaterializingImplicitAgent(false);
     setSandboxClearIntent(false);
     setSaveAttempted(false);
@@ -1899,6 +1902,7 @@ export default function Agents() {
 
   const openEdit = (agent: AgentItem, section: AgentFormSection = 'basic') => {
     setMsg('');
+    setIdentityImportMsg('');
     const implicitAgent = isImplicitAgent(agent);
     setMaterializingImplicitAgent(implicitAgent);
     setSandboxClearIntent(false);
@@ -2484,8 +2488,10 @@ export default function Agents() {
   const importIdentityFromCoreFile = async () => {
     const agentId = (editingId || form.id || '').trim();
     if (!agentId) {
-      setMsg('请先填写 Agent ID，或在已有 Agent 上使用该导入功能。');
-      setTimeout(() => setMsg(''), 4000);
+      const text = '请先填写 Agent ID，或在已有 Agent 上使用该导入功能。';
+      setMsg(text);
+      setIdentityImportMsg(text);
+      setTimeout(() => { setMsg(''); setIdentityImportMsg(''); }, 4000);
       return;
     }
     try {
@@ -2495,8 +2501,10 @@ export default function Agents() {
         if (!response?.ok) {
           const error = String(response?.error || '无法读取 IDENTITY.md');
           setCoreFilesStateByAgent(prev => ({ ...prev, [agentId]: classifyCoreFilesLoadState(error, String(response?.workspace || '').trim() || undefined) }));
-          setMsg(`导入失败: ${error}`);
-          setTimeout(() => setMsg(''), 4000);
+          const text = `导入失败: ${error}`;
+          setMsg(text);
+          setIdentityImportMsg(text);
+          setTimeout(() => { setMsg(''); setIdentityImportMsg(''); }, 4000);
           return;
         }
         files = response.files || [];
@@ -2508,14 +2516,18 @@ export default function Agents() {
       }
       const identityFile = (files || []).find((file: AgentCoreFileEntry) => file.name === 'IDENTITY.md');
       if (!identityFile?.content?.trim()) {
-        setMsg('未找到可导入的 IDENTITY.md 内容。');
-        setTimeout(() => setMsg(''), 4000);
+        const text = '未找到可导入的 IDENTITY.md 内容。';
+        setMsg(text);
+        setIdentityImportMsg(text);
+        setTimeout(() => { setMsg(''); setIdentityImportMsg(''); }, 4000);
         return;
       }
       const parsed = parseIdentityMarkdown(identityFile.content);
       if (!parsed.name && !parsed.theme && !parsed.creature && !parsed.vibe && !parsed.emoji && !parsed.avatar) {
-        setMsg('IDENTITY.md 中未解析出 Name / Theme / Creature / Vibe / Emoji / Avatar。');
-        setTimeout(() => setMsg(''), 4000);
+        const text = 'IDENTITY.md 中未解析出 Name / Theme / Creature / Vibe / Emoji / Avatar。';
+        setMsg(text);
+        setIdentityImportMsg(text);
+        setTimeout(() => { setMsg(''); setIdentityImportMsg(''); }, 4000);
         return;
       }
       updateForm({
@@ -2524,11 +2536,15 @@ export default function Agents() {
         identityEmoji: parsed.emoji || form.identityEmoji,
         identityAvatar: parsed.avatar || form.identityAvatar,
       }, 'identity');
-      setMsg('已从 IDENTITY.md 导入可识别字段');
-      setTimeout(() => setMsg(''), 3000);
+      const text = '已从 IDENTITY.md 导入可识别字段';
+      setMsg(text);
+      setIdentityImportMsg(text);
+      setTimeout(() => { setMsg(''); setIdentityImportMsg(''); }, 3000);
     } catch (err) {
-      setMsg('导入失败: ' + String(err));
-      setTimeout(() => setMsg(''), 4000);
+      const text = '导入失败: ' + String(err);
+      setMsg(text);
+      setIdentityImportMsg(text);
+      setTimeout(() => { setMsg(''); setIdentityImportMsg(''); }, 4000);
     }
   };
 
@@ -2682,9 +2698,9 @@ export default function Agents() {
                           setSelectedAgentId(agent.id);
                           setDetailTab('overview');
                         }}
-                        className="w-full text-left"
+                        className="w-full min-w-0 text-left"
                       >
-                        <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-start justify-between gap-2 min-w-0">
                           <div>
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="font-medium text-sm text-gray-900 dark:text-white">{cardTitle}</span>
@@ -2706,7 +2722,7 @@ export default function Agents() {
                           </div>
                         </div>
                         <div className="mt-3 space-y-1 text-[11px] text-gray-500">
-                          <div>工作区（Workspace）：<span className="font-mono text-gray-700 dark:text-gray-200">{agent.workspace || '—'}</span></div>
+                          <div className="min-w-0">工作区（Workspace）：<span className="font-mono text-gray-700 dark:text-gray-200 break-all">{agent.workspace || '—'}</span></div>
                           <div>最后活跃（Last Active）：<span className="text-gray-700 dark:text-gray-200">{formatLastActive(agent.lastActive)}</span></div>
                         </div>
                       </button>
@@ -3004,11 +3020,11 @@ export default function Agents() {
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                             <div className="rounded-lg border border-gray-100 dark:border-gray-700 px-3 py-3">
                               <div className="text-gray-400">工作区（Workspace）</div>
-                              <div className="mt-1 font-mono text-gray-700 dark:text-gray-200">{selectedAgent.workspace || '未设置'}</div>
+                              <div className="mt-1 font-mono text-gray-700 dark:text-gray-200 break-all">{selectedAgent.workspace || '未设置'}</div>
                             </div>
                             <div className="rounded-lg border border-gray-100 dark:border-gray-700 px-3 py-3">
                               <div className="text-gray-400">Agent 目录（AgentDir）</div>
-                              <div className="mt-1 font-mono text-gray-700 dark:text-gray-200">{selectedAgent.agentDir || '未设置'}</div>
+                              <div className="mt-1 font-mono text-gray-700 dark:text-gray-200 break-all">{selectedAgent.agentDir || '未设置'}</div>
                             </div>
                           </div>
                           {(selectedToolAllow.length > 0 || selectedToolDeny.length > 0) && (
@@ -4035,7 +4051,7 @@ export default function Agents() {
                   </div>
                   <div className="rounded-lg bg-gray-50 dark:bg-gray-900 border border-gray-100 dark:border-gray-700 px-3 py-2">
                       <div className="text-gray-400">工作区（Workspace）</div>
-                    <div className="font-mono text-gray-700 dark:text-gray-200 mt-1 truncate">{form.workspace.trim() || '未设置'}</div>
+                    <div className="font-mono text-gray-700 dark:text-gray-200 mt-1 break-all">{form.workspace.trim() || '未设置'}</div>
                   </div>
                   <div className="rounded-lg bg-gray-50 dark:bg-gray-900 border border-gray-100 dark:border-gray-700 px-3 py-2">
                       <div className="text-gray-400">默认接管（Default）</div>
@@ -4280,6 +4296,11 @@ export default function Agents() {
                           从 IDENTITY.md 导入
                         </button>
                       </div>
+                      {identityImportMsg && (
+                        <div className={`mt-2 px-3 py-2 rounded-lg text-xs ${identityImportMsg.includes('失败') || identityImportMsg.includes('未解析') || identityImportMsg.includes('未找到') ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400' : 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400'}`}>
+                          {identityImportMsg}
+                        </div>
+                      )}
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div>
