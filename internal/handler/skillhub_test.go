@@ -242,12 +242,8 @@ func TestGetSkillHubStatusReportsInstalledBinary(t *testing.T) {
 	defer restore()
 
 	root := t.TempDir()
-	binPath := filepath.Join(root, "skillhub")
-	if err := os.WriteFile(binPath, []byte(`#!/bin/sh
-exit 0
-`), 0o755); err != nil {
-		t.Fatalf("write fake skillhub: %v", err)
-	}
+	binPath := filepath.Join(root, testExecutableBase("skillhub"))
+	writeFakeSkillHubCommand(t, binPath, filepath.Join(root, "skillhub-status.log"), false)
 	t.Setenv("SKILLHUB_BIN", binPath)
 	t.Setenv("PATH", root)
 	skillHubBinaryCandidatePaths = nil
@@ -819,6 +815,7 @@ func buildWindowsFakeSkillHubCommand(logPath string, includeEnv bool) string {
 	lines = append(lines,
 		`mkdir "%CD%\skills\%~2" >nul 2>nul`,
 		`<nul set /p "=installed %~2"`,
+		`exit /b 0`,
 		"",
 	)
 	return strings.Join(lines, "\r\n")
