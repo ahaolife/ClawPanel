@@ -556,6 +556,65 @@ func TestPatchModelsJSONForAgentUsesConfiguredAgentDir(t *testing.T) {
 	}
 }
 
+func TestPatchModelsJSONForAgentUsesExternalNestedAgentDir(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	external := filepath.Join(t.TempDir(), "isolated", "agent")
+	cfg := &config.Config{OpenClawDir: dir}
+	writeJSONRaw := func(path string, data map[string]interface{}) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+		}
+		raw, err := json.Marshal(data)
+		if err != nil {
+			t.Fatalf("marshal json: %v", err)
+		}
+		if err := os.WriteFile(path, raw, 0644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	writeJSONRaw(filepath.Join(dir, "openclaw.json"), map[string]interface{}{
+		"agents": map[string]interface{}{
+			"list": []interface{}{
+				map[string]interface{}{"id": "work", "agentDir": external},
+			},
+		},
+	})
+	modelsPath := filepath.Join(external, "models.json")
+	writeJSONRaw(modelsPath, map[string]interface{}{
+		"providers": map[string]interface{}{
+			"deepseek": map[string]interface{}{
+				"baseUrl": "https://api.deepseek.com/v1",
+				"models": []interface{}{
+					map[string]interface{}{"id": "deepseek-chat", "compat": map[string]interface{}{"supportsDeveloperRole": true}},
+				},
+			},
+		},
+	})
+
+	patchModelsJSONForAgent(cfg, "work")
+
+	raw, err := os.ReadFile(modelsPath)
+	if err != nil {
+		t.Fatalf("read models.json: %v", err)
+	}
+	var saved map[string]interface{}
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatalf("decode models.json: %v", err)
+	}
+	providers, _ := saved["providers"].(map[string]interface{})
+	provider, _ := providers["deepseek"].(map[string]interface{})
+	models, _ := provider["models"].([]interface{})
+	model, _ := models[0].(map[string]interface{})
+	compat, _ := model["compat"].(map[string]interface{})
+	if got, _ := compat["supportsDeveloperRole"].(bool); got {
+		t.Fatalf("expected compat.supportsDeveloperRole to be forced false")
+	}
+}
+
 func TestNormalizeFeishuChannelConfigMirrorsDefaultAccountToTopLevel(t *testing.T) {
 	t.Parallel()
 
@@ -942,6 +1001,22 @@ func TestNormalizeFeishuChannelConfigDropsLegacyDMScope(t *testing.T) {
 	}
 }
 
+func TestNormalizeFeishuChannelConfigRejectsInvalidRequireMention(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]interface{}{
+		"requireMention": "open",
+	}
+
+	err := normalizeFeishuChannelConfigInPlace(input)
+	if err == nil {
+		t.Fatal("expected invalid requireMention to be rejected")
+	}
+	if !strings.Contains(err.Error(), "requireMention") {
+		t.Fatalf("expected error to mention requireMention, got %v", err)
+	}
+}
+
 func TestSaveChannelRejectsQQWhenPluginMissing(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -1009,6 +1084,29 @@ func TestSaveChannelQQReturnsMessageWithoutProcessManager(t *testing.T) {
 	}
 	if ok, _ := resp["ok"].(bool); !ok {
 		t.Fatalf("expected ok response, got %#v", resp)
+	}
+}
+
+func TestSaveChannelRejectsInvalidFeishuRequireMention(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	cfg := &config.Config{OpenClawDir: dir}
+	r := gin.New()
+	r.PUT("/openclaw/channels/:id", SaveChannel(cfg, nil))
+
+	body := []byte(`{"enabled":true,"requireMention":"open","groupPolicy":"open"}`)
+	req := httptest.NewRequest(http.MethodPut, "/openclaw/channels/feishu", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "requireMention") {
+		t.Fatalf("expected error to mention requireMention, got %s", w.Body.String())
 	}
 }
 

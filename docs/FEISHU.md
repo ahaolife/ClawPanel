@@ -88,7 +88,7 @@ ClawPanel 现在把飞书账号统一收口到同一套语义：
 | 字段 | 面板默认建议 | 说明 |
 | --- | --- | --- |
 | `domain` | `feishu` | 国内飞书默认保持 `feishu`；国际版可切换 `lark` |
-| `requireMention` | `true` | 群里默认仅在 `@` 机器人时回复 |
+| `requireMention` | `true` | 仅布尔开关：`true` = 群里默认仅在 `@` 机器人时回复；`false` = 放宽触发。`open` 不属于这个字段 |
 | `groupPolicy` | `open` | 所有群可接入；如需收紧再切 `allowlist` 或 `closed` |
 | `groupAllowFrom` | 空 | 仅 `groupPolicy=allowlist` 时生效 |
 | `dmPolicy` | `pairing` | 私聊默认先配对，再建立会话 |
@@ -133,6 +133,12 @@ oc_group_b
 
 - 这份白名单当前不会生效
 - 保存后后端会自动清理 `groupAllowFrom`
+
+另外请注意：
+
+- `requireMention` 只接受 `true / false`
+- 如果希望群聊开放接入，应修改的是 `groupPolicy=open`
+- 面板现在会拒绝把 `open` 之类的字符串写进 `requireMention`
 
 ## 5. 双账号 + Agent 路由的关键语义
 

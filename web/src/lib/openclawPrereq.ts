@@ -41,7 +41,7 @@ export async function getOpenClawInstallPrerequisiteStatus(): Promise<OpenClawIn
       ...base,
       ok: false,
       requiresManualInstall: true,
-      message: `检测到 ${platformLabel} 缺少 ${missing.join(' 和 ')}。为避免一键安装中途报错，请先手动安装 Node.js 与 Git 后再回来继续安装 OpenClaw。`,
+      message: `检测到 ${platformLabel} 缺少 ${missing.join(' 和 ')}。为避免一键安装中途报错，请先手动安装 Node.js 与 Git，再回来继续安装 OpenClaw。`,
     };
   } catch {
     return base;

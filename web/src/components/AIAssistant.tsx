@@ -302,8 +302,8 @@ export default function AIAssistant() {
                   <Bot size={28} className="text-current" />
                 </div>
                 <div className="text-center">
-                  <p className="text-sm font-medium text-gray-500 dark:text-gray-400">你好！我是 ClawPanel AI 助手</p>
-                  <p className="text-xs text-gray-400 mt-1">有任何关于管理后台的问题都可以问我</p>
+                  <p className="text-sm font-medium text-gray-500 dark:text-gray-400">需要帮助？</p>
+                  <p className="text-xs text-gray-400 mt-1">可以直接询问管理后台相关问题</p>
                 </div>
                 <div className="flex flex-wrap gap-1.5 justify-center mt-2">
                   {['如何配置模型？', '技能怎么启用？', '怎么添加QQ通道？', '你使用的是什么模型？'].map(q => (

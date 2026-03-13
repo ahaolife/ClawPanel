@@ -124,9 +124,9 @@ export default function OpenClawRequired({ openclawStatus, processStatus, childr
       <div className="space-y-3">
         <div className="rounded-2xl border border-amber-200/80 dark:border-amber-900/50 bg-amber-50/90 dark:bg-amber-950/20 px-4 py-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <div className="text-sm font-semibold text-amber-900 dark:text-amber-200">OpenClaw 尚未就绪</div>
+            <div className="text-sm font-semibold text-amber-900 dark:text-amber-200">OpenClaw 尚未安装或配置</div>
             <p className="text-xs text-amber-700 dark:text-amber-300 mt-1">
-              已暂时关闭阻断提示，便于前端调试；当前页面的实时数据和保存能力可能不完整。
+              当前页面仍可浏览，但部分实时数据和保存功能可能暂时不可用。
             </p>
             {installBlockedMessage && <p className="text-xs text-amber-700 dark:text-amber-300 mt-2">{installBlockedMessage}</p>}
           </div>

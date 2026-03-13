@@ -31,8 +31,8 @@ export default function UpdatePopup() {
               <Sparkles size={24} />
             </div>
             <div>
-              <h2 className="text-lg font-bold">ClawPanel 已更新至 {popup.version}</h2>
-              <p className="text-violet-200 text-xs mt-0.5">更新已自动完成</p>
+              <h2 className="text-lg font-bold">ClawPanel 已更新到 {popup.version}</h2>
+              <p className="text-violet-200 text-xs mt-0.5">更新已完成，无需手动操作</p>
             </div>
           </div>
         </div>
@@ -49,7 +49,7 @@ export default function UpdatePopup() {
         <div className="px-6 py-4 border-t border-gray-100 dark:border-gray-700 flex justify-end">
           <button onClick={dismiss}
             className="px-6 py-2.5 text-sm font-medium rounded-xl bg-violet-600 text-white hover:bg-violet-700 shadow-sm shadow-violet-200 dark:shadow-none transition-all hover:shadow-md">
-            我知道了
+            关闭提示
           </button>
         </div>
       </div>

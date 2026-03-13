@@ -99,7 +99,7 @@ func buildFeishuDMDiagnosis(cfg *config.Config) FeishuDMDiagnosis {
 		defaultAgent = "main"
 	}
 	mainSessionKey := "agent:" + defaultAgent + ":main"
-	sessionFilePath := resolveAgentPath(cfg, defaultAgent, "sessions", "sessions.json")
+	sessionFilePath := filepath.Join(resolveAgentSessionsDir(cfg, defaultAgent), "sessions.json")
 	credentialsDir := filepath.Join(cfg.OpenClawDir, "credentials")
 	pairingStorePath := filepath.Join(credentialsDir, "feishu-pairing.json")
 	authorizedSenders, authorizedSenderCount := collectFeishuAuthorizedSenders(credentialsDir, accountIDs, defaultAccount)
@@ -132,7 +132,7 @@ func buildFeishuDMDiagnosis(cfg *config.Config) FeishuDMDiagnosis {
 
 	allKeys := make([]string, 0)
 	for _, agentID := range agentIDs {
-		path := resolveAgentPath(cfg, agentID, "sessions", "sessions.json")
+		path := filepath.Join(resolveAgentSessionsDir(cfg, agentID), "sessions.json")
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			continue

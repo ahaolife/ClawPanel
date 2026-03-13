@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { api } from '../lib/api';
 import { Plus, RefreshCw, Save, Trash2, ArrowUp, ArrowDown, Route, Bot, Settings, Brain, Shield, ChevronDown, ChevronRight, Sparkles, FileText } from 'lucide-react';
@@ -188,7 +188,7 @@ const AGENT_FORM_SECTIONS: { id: AgentFormSection; title: string; description: s
   { id: 'basic', title: '基础信息 (Basic)', description: '核心身份、工作区与默认关系' },
   { id: 'behavior', title: '行为设定 (Behavior)', description: '模型、常用参数与身份摘要' },
   { id: 'access', title: '访问与安全 (Access & Safety)', description: 'sandbox 与群聊行为' },
-  { id: 'collaboration', title: '协作策略 (Collaboration)', description: '子 Agent 与跨 Agent 可见性' },
+  { id: 'collaboration', title: '协作说明 (Global Collaboration)', description: '当前仅支持全局协作策略' },
   { id: 'advanced', title: '高级 JSON (Advanced)', description: '完整 JSON 覆盖与 runtime' },
 ];
 const SANDBOX_STARTERS = [
@@ -1271,9 +1271,9 @@ function createAgentFormState(agent?: AgentItem): AgentFormState {
     })(),
     toolAllow: parseStringList(getNestedValue(tools, 'allow')).join(', '),
     toolDeny: parseStringList(getNestedValue(tools, 'deny')).join(', '),
-    agentToAgentMode: triStateFromValue(getNestedValue(tools, 'agentToAgent.enabled')),
-    agentToAgentAllow: parseStringList(getNestedValue(tools, 'agentToAgent.allow')).join(', '),
-    sessionVisibility: normalizeSessionVisibility(getNestedValue(tools, 'sessions.visibility')),
+    agentToAgentMode: 'inherit',
+    agentToAgentAllow: '',
+    sessionVisibility: '',
     subagentAllowAgents: parseStringList(getNestedValue(subagents, 'allowAgents')).join(', '),
     modelText: stringifyJSON(agent?.model),
     toolsText: stringifyJSON(agent?.tools),
@@ -1327,7 +1327,7 @@ function buildPreviewExplanation(result: PreviewResult | null, bindings: Binding
   };
 }
 
-export default function Agents() {
+function AgentsPage() {
   const { uiMode } = (useOutletContext() as { uiMode?: 'modern' }) || {};
   const modern = uiMode === 'modern';
   const [loading, setLoading] = useState(true);
@@ -1339,7 +1339,7 @@ export default function Agents() {
   const [workbenchView, setWorkbenchView] = useState<AgentsWorkbenchView>('directory');
   const [selectedAgentId, setSelectedAgentId] = useState('');
   const [detailTab, setDetailTab] = useState<AgentDetailTab>('overview');
-  const [expandedBindingIndex, setExpandedBindingIndex] = useState<number | null>(0);
+  const [expandedBindingIndex, setExpandedBindingIndex] = useState<number | null>(null);
 
   const [defaultAgent, setDefaultAgent] = useState('main');
   const [defaultConfigured, setDefaultConfigured] = useState(false);
@@ -1662,6 +1662,7 @@ export default function Agents() {
         setDefaultConfigured(data.defaultConfigured === true);
         setAgents(list);
         setBindings(incomingBindings.map((b: any) => toBindingDraft(b, fallback)));
+        setExpandedBindingIndex(incomingBindings.length > 0 ? 0 : null);
         nextDefaultModelHint = extractModelDraft(defaults.model).primary;
         setDefaultModelHint(nextDefaultModelHint);
         const defaultContextTokens = Number(defaults.contextTokens);
@@ -1681,6 +1682,7 @@ export default function Agents() {
         setDefaultConfigured(false);
         setAgents([]);
         setBindings([]);
+        setExpandedBindingIndex(null);
         setDefaultModelHint('');
         setAgentDefaults(EMPTY_AGENT_DEFAULTS);
       }
@@ -1717,6 +1719,7 @@ export default function Agents() {
       setDefaultConfigured(false);
       setAgents([]);
       setBindings([]);
+      setExpandedBindingIndex(null);
       setChannelConfigs({});
       setChannelMeta({});
       setModelOptions([]);
@@ -1867,8 +1870,8 @@ export default function Agents() {
       if (expandedBindingIndex !== null) setExpandedBindingIndex(null);
       return;
     }
-    if (expandedBindingIndex === null || expandedBindingIndex >= bindings.length) {
-      setExpandedBindingIndex(0);
+    if (expandedBindingIndex !== null && expandedBindingIndex >= bindings.length) {
+      setExpandedBindingIndex(bindings.length - 1);
     }
   }, [bindings.length, expandedBindingIndex]);
 
@@ -2006,9 +2009,9 @@ export default function Agents() {
         })(),
         toolAllow: isPlainObject(toolsObj) ? parseStringList(getNestedValue(toolsObj, 'allow')).join(', ') : '',
         toolDeny: isPlainObject(toolsObj) ? parseStringList(getNestedValue(toolsObj, 'deny')).join(', ') : '',
-        agentToAgentMode: triStateFromValue(isPlainObject(toolsObj) ? getNestedValue(toolsObj, 'agentToAgent.enabled') : undefined),
-        agentToAgentAllow: isPlainObject(toolsObj) ? parseStringList(getNestedValue(toolsObj, 'agentToAgent.allow')).join(', ') : '',
-        sessionVisibility: normalizeSessionVisibility(isPlainObject(toolsObj) ? getNestedValue(toolsObj, 'sessions.visibility') : ''),
+        agentToAgentMode: 'inherit',
+        agentToAgentAllow: '',
+        sessionVisibility: '',
         subagentAllowAgents: isPlainObject(subagentsObj) ? parseStringList(getNestedValue(subagentsObj, 'allowAgents')).join(', ') : '',
       }));
       setSandboxClearIntent(false);
@@ -2130,14 +2133,8 @@ export default function Agents() {
         const toolDenyList = parseCSV(form.toolDeny);
         if (toolDenyList.length > 0) nextTools.deny = toolDenyList;
         else delete nextTools.deny;
-        const agentToAgentEnabled = triStateToValue(form.agentToAgentMode);
-        if (agentToAgentEnabled === undefined) deleteNestedValue(nextTools, 'agentToAgent.enabled');
-        else setNestedValue(nextTools, 'agentToAgent.enabled', agentToAgentEnabled);
-        const allowList = parseCSV(form.agentToAgentAllow);
-        if (allowList.length > 0) setNestedValue(nextTools, 'agentToAgent.allow', allowList);
-        else deleteNestedValue(nextTools, 'agentToAgent.allow');
-        if (form.sessionVisibility) setNestedValue(nextTools, 'sessions.visibility', form.sessionVisibility);
-        else deleteNestedValue(nextTools, 'sessions.visibility');
+        delete nextTools.agentToAgent;
+        delete nextTools.sessions;
         toolsObj = cleanupObject(nextTools);
       }
 
@@ -2796,7 +2793,7 @@ export default function Agents() {
                         <div className="rounded-xl border border-gray-100 dark:border-gray-700 px-3 py-3 bg-gray-50/80 dark:bg-gray-900">
                           <div className="text-gray-400">工具与权限（Tools & Access）</div>
                           <div className="mt-1 font-medium text-gray-900 dark:text-white">{describeSandboxMode(selectedAgent.sandbox)}</div>
-                          <div className="mt-1 text-gray-500">{describeSessionVisibility(getNestedValue(selectedTools, 'sessions.visibility'))}</div>
+                          <div className="mt-1 text-gray-500">profile：{String(getNestedValue(selectedTools, 'profile') || '未设置')}</div>
                         </div>
                         <div className="rounded-xl border border-gray-100 dark:border-gray-700 px-3 py-3 bg-gray-50/80 dark:bg-gray-900">
                           <div className="text-gray-400">路由上下文（Routing Context）</div>
@@ -2864,8 +2861,9 @@ export default function Agents() {
                             </div>
                             <div className="mt-3 space-y-2 text-sm text-gray-600 dark:text-gray-300">
                               <div>Sandbox：<span className="font-medium text-gray-900 dark:text-white">{describeSandboxMode(selectedAgent.sandbox)}</span></div>
-                              <div>Agent 协作：{describeTriState(triStateFromValue(getNestedValue(selectedTools, 'agentToAgent.enabled')), '允许委派', '禁用委派')}</div>
-                              <div>会话可见性：{describeSessionVisibility(getNestedValue(selectedTools, 'sessions.visibility'))}</div>
+                              <div>Tool Profile：{String(getNestedValue(selectedTools, 'profile') || '未设置')}</div>
+                              <div>Allow：{parseStringList(getNestedValue(selectedTools, 'allow')).join(', ') || '未设置'}</div>
+                              <div>Deny：{parseStringList(getNestedValue(selectedTools, 'deny')).join(', ') || '未设置'}</div>
                               <div>群聊模式：{describeTriState(triStateFromValue(getNestedValue(selectedGroupChat, 'enabled')), '显式启用', '显式关闭')}</div>
                             </div>
                             <button onClick={() => openEdit(selectedAgent, 'access')} className={`mt-4 ${actionButtonClass}`}>
@@ -2991,18 +2989,21 @@ export default function Agents() {
                       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                         <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 space-y-4">
                           <div>
-                            <h4 className="text-sm font-semibold text-gray-900 dark:text-white">协作与会话可见性（Collaboration & Sessions）</h4>
-                            <p className="text-xs text-gray-500 mt-1">先给业务方可读摘要，再决定是否进入编辑弹窗或高级 JSON。</p>
+                            <h4 className="text-sm font-semibold text-gray-900 dark:text-white">工具策略与群聊（Tool Policy & Group Chat）</h4>
+                            <p className="text-xs text-gray-500 mt-1">这里只展示当前 Agent 真正受支持的工具覆盖；跨 Agent 协作策略请到系统级配置查看。</p>
                           </div>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                             <div className="rounded-lg bg-gray-50 dark:bg-gray-900 px-3 py-3">
-                              <div className="text-xs text-gray-400">Agent 协作（Delegation）</div>
-                              <div className="mt-1 text-gray-900 dark:text-white">{describeTriState(triStateFromValue(getNestedValue(selectedTools, 'agentToAgent.enabled')), '允许委派', '禁用委派')}</div>
-                              <div className="mt-1 text-xs text-gray-500">{parseStringList(getNestedValue(selectedTools, 'agentToAgent.allow')).join(', ') || 'allow 未设置'}</div>
+                              <div className="text-xs text-gray-400">Tool Profile</div>
+                              <div className="mt-1 text-gray-900 dark:text-white">{String(getNestedValue(selectedTools, 'profile') || '未设置')}</div>
                             </div>
                             <div className="rounded-lg bg-gray-50 dark:bg-gray-900 px-3 py-3">
-                              <div className="text-xs text-gray-400">会话可见范围（Session Visibility）</div>
-                              <div className="mt-1 text-gray-900 dark:text-white">{describeSessionVisibility(getNestedValue(selectedTools, 'sessions.visibility'))}</div>
+                              <div className="text-xs text-gray-400">Allow</div>
+                              <div className="mt-1 text-gray-900 dark:text-white">{parseStringList(getNestedValue(selectedTools, 'allow')).join(', ') || '未设置'}</div>
+                            </div>
+                            <div className="rounded-lg bg-gray-50 dark:bg-gray-900 px-3 py-3">
+                              <div className="text-xs text-gray-400">Deny</div>
+                              <div className="mt-1 text-gray-900 dark:text-white">{parseStringList(getNestedValue(selectedTools, 'deny')).join(', ') || '未设置'}</div>
                             </div>
                             <div className="rounded-lg bg-gray-50 dark:bg-gray-900 px-3 py-3">
                               <div className="text-xs text-gray-400">群聊模式（Group Chat）</div>
@@ -3010,8 +3011,12 @@ export default function Agents() {
                             </div>
                             <div className="rounded-lg bg-gray-50 dark:bg-gray-900 px-3 py-3">
                               <div className="text-xs text-gray-400">子 Agent allow（Subagents）</div>
-                              <div className="mt-1 text-gray-900 dark:text-white">{parseStringList(getNestedValue(selectedSubagents, 'allowAgents')).join(', ') || '未限制'}</div>
+                              <div className="mt-1 text-gray-900 dark:text-white">{parseStringList(getNestedValue(selectedSubagents, 'allowAgents')).join(', ') || '未额外覆盖（默认仅同 Agent）'}</div>
                             </div>
+                          </div>
+                          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200">
+                            OpenClaw 当前不支持 <span className="font-mono">agents.list[].tools.agentToAgent</span> 和 <span className="font-mono">agents.list[].tools.sessions.visibility</span>。
+                            这两项只支持系统级 <span className="font-mono">tools</span> 配置。
                           </div>
                         </div>
                         <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 space-y-4">
@@ -4109,7 +4114,7 @@ export default function Agents() {
                   <div className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] text-amber-700 space-y-1.5">
                     <div><span className="font-medium">workspace</span> 只是默认工作目录，方便文件与上下文定位；它不是硬隔离边界。</div>
                     <div>如果需要更严格的执行限制，请在 <span className="font-medium">Access &amp; Safety</span> 里设置 <span className="font-mono">sandbox</span> 覆盖。</div>
-                    <div>当前 Panel 还会把 <span className="font-mono">workspace</span> / <span className="font-mono">agentDir</span> 约束在 OpenClaw 受管目录内；同一个 <span className="font-mono">agentDir</span> 不要复用，<span className="font-mono">workspace</span> 目前也不能与其它 Agent 重复。</div>
+                    <div><span className="font-mono">agentDir</span> 可以放在 OpenClaw 状态目录外，但同一个 <span className="font-mono">agentDir</span> 不要复用；<span className="font-mono">workspace</span> 目前也不能与其它 Agent 重复。</div>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -4144,7 +4149,7 @@ export default function Agents() {
                         placeholder="workspaces/support"
                         className="w-full mt-1 px-3 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
                       />
-                      <p className="mt-1 text-[11px] text-gray-400">用于默认文件读写位置，不代表执行隔离；当前 Panel 只接受 OpenClaw 受管目录内的路径。</p>
+                      <p className="mt-1 text-[11px] text-gray-400">用于默认文件读写位置，不代表执行隔离；可以填写绝对路径，但部分受保护的 core-files 功能仍要求落在面板受管工作区内。</p>
                       {workspaceConflict && (
                         <p className="mt-1 text-[11px] text-red-600">该 workspace 已被 Agent “{workspaceConflict.id}” 使用。</p>
                       )}
@@ -4157,7 +4162,7 @@ export default function Agents() {
                         placeholder="agents/support"
                         className="w-full mt-1 px-3 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
                       />
-                      <p className="mt-1 text-[11px] text-gray-400">建议每个 Agent 使用独立目录，避免 auth / session 文件冲突。</p>
+                      <p className="mt-1 text-[11px] text-gray-400">建议每个 Agent 使用独立目录，避免认证或模型配置互相覆盖；可填写 OpenClaw 状态目录外的绝对路径。</p>
                       {agentDirConflict && (
                         <p className="mt-1 text-[11px] text-red-600">该 agentDir 已被 Agent “{agentDirConflict.id}” 使用。</p>
                       )}
@@ -4688,45 +4693,18 @@ export default function Agents() {
                 <div className="space-y-5">
                   <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 space-y-4">
                     <div>
-                      <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Agent 间协作（Agent Collaboration）</h4>
-                      <p className="text-xs text-gray-500 mt-1">结构化编辑会写回 <span className="font-mono">tools.agentToAgent</span> 与 <span className="font-mono">tools.sessions.visibility</span>。</p>
+                      <h4 className="text-sm font-semibold text-gray-900 dark:text-white">全局协作策略说明（Global Collaboration）</h4>
+                      <p className="text-xs text-gray-500 mt-1">OpenClaw 2026.3.8 当前只支持系统级 <span className="font-mono">tools.agentToAgent</span> 与 <span className="font-mono">tools.sessions.visibility</span>，不支持单 Agent 覆盖。</p>
                     </div>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <div>
-                        <label className="text-xs text-gray-500">Agent 间委派（Agent-to-Agent Delegation）</label>
-                        <select
-                          value={form.agentToAgentMode}
-                          onChange={e => updateForm({ agentToAgentMode: e.target.value as InheritToggle }, 'tools')}
-                          className="w-full mt-1 px-3 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
-                        >
-                          <option value="inherit">继承默认</option>
-                          <option value="enabled">显式启用</option>
-                          <option value="disabled">显式关闭</option>
-                        </select>
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-100">
+                      <div className="font-medium">当前 Agent 页面不会再写入这两个字段。</div>
+                      <div className="mt-2 text-xs leading-6">
+                        历史上误写到 <span className="font-mono">agents.list[].tools.agentToAgent</span> /
+                        <span className="font-mono"> agents.list[].tools.sessions.visibility</span> 的值，会在下一次保存时自动清理，避免 OpenClaw 报
+                        <span className="font-mono"> Unrecognized key</span>。
                       </div>
-                      <div className="md:col-span-2">
-                        <label className="text-xs text-gray-500">委派白名单（Delegation Allow Rules）</label>
-                        <input
-                          value={form.agentToAgentAllow}
-                          onChange={e => updateForm({ agentToAgentAllow: e.target.value }, 'tools')}
-                          placeholder="逗号分隔，例如 *, main->work, work->reviewer"
-                          className="w-full mt-1 px-3 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
-                        />
-                        <p className="mt-1 text-[11px] text-gray-400">保存时会写为数组到 <span className="font-mono">tools.agentToAgent.allow</span>。</p>
-                      </div>
-                      <div>
-                        <label className="text-xs text-gray-500">会话可见性（Session Visibility）</label>
-                        <select
-                          value={form.sessionVisibility}
-                          onChange={e => updateForm({ sessionVisibility: e.target.value as SessionVisibility }, 'tools')}
-                          className="w-full mt-1 px-3 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
-                        >
-                          <option value="">继承默认</option>
-                          <option value="self">仅当前会话（self）</option>
-                          <option value="tree">当前会话树（tree）</option>
-                          <option value="agent">当前 Agent 的全部会话（agent）</option>
-                          <option value="all">所有会话（all）</option>
-                        </select>
+                      <div className="mt-2 text-xs leading-6">
+                        需要调整跨 Agent 委派或会话可见性时，请改系统级 <span className="font-mono">System Config</span> 中的全局 <span className="font-mono">tools</span> 配置。
                       </div>
                     </div>
                   </div>
@@ -4734,16 +4712,17 @@ export default function Agents() {
                   <div className="rounded-xl border border-gray-100 dark:border-gray-700 p-4 space-y-4">
                     <div>
                       <h4 className="text-sm font-semibold text-gray-900 dark:text-white">子 Agent 允许列表（Subagents Allowlist）</h4>
-                      <p className="text-xs text-gray-500 mt-1">用于编辑 <span className="font-mono">subagents.allowAgents</span>。留空表示不额外覆盖。</p>
+                      <p className="text-xs text-gray-500 mt-1">用于编辑 <span className="font-mono">subagents.allowAgents</span>。这是 OpenClaw 2026.3.8 支持的正式字段；留空表示不额外覆盖，默认仅允许同一 Agent 自己。</p>
                     </div>
                     <div>
                         <label className="text-xs text-gray-500">允许的 Agent（Allowed Agents）</label>
                       <input
                         value={form.subagentAllowAgents}
                         onChange={e => updateForm({ subagentAllowAgents: e.target.value }, 'subagents')}
-                        placeholder="逗号分隔，例如 main, reviewer, summarizer"
+                        placeholder="逗号分隔，例如 research, reviewer, *"
                         className="w-full mt-1 px-3 py-2.5 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900"
                       />
+                      <p className="mt-1 text-[11px] text-gray-400">用于限制 <span className="font-mono">sessions_spawn</span> 可指定的 <span className="font-mono">agentId</span>；<span className="font-mono">*</span> 表示允许任意 Agent。</p>
                     </div>
                   </div>
                 </div>
@@ -4897,3 +4876,8 @@ export default function Agents() {
     </div>
   );
 }
+
+const Agents = memo(AgentsPage);
+Agents.displayName = 'Agents';
+
+export default Agents;

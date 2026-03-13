@@ -230,6 +230,13 @@ Authorization: Bearer <token>
 }
 ```
 
+> 兼容说明：当前面板同时兼容两类 `agentDir` 写法：
+> - bundle 根目录：`agents/work`
+> - OpenClaw 新运行态返回的子目录：`~/.openclaw/agents/work/agent`
+>
+> 无论哪种写法，ClawPanel 都会把同级的 `sessions/`、`auth/` 等运行时目录解析到正确位置。
+> 另外也允许把 `agentDir` 指向 OpenClaw 状态目录外的绝对路径；这只影响认证/模型等 agent 配置目录，`sessions/` 仍按 OpenClaw 规范保存在状态目录下。
+
 > v5.1.0+：保存时会校验：
 > - 当前 OpenClaw schema 不支持 `agent.contextTokens` / `agent.compaction`；面板会在保存时自动清理这两个 legacy per-agent 字段
 > - 更新 Agent 时会保留未修改的 legacy `identity.avatar` 写法；若显式修改 avatar，仍按当前规则校验
@@ -302,6 +309,7 @@ Authorization: Bearer <token>
 > - top-level 公开字段为 `type`（`route`/`acp`）、`comment`、`agentId`、`acp`
 > - 旧字段 `agent` 仍会在保存时被标准化为 `agentId`
 > - 旧字段 `name` 会作为 `comment` 别名兼容读取；重新保存时统一写成 `comment`
+> - 历史 `agents.bindings` 仍会被兼容读取并迁移到顶层 `bindings`；当前面板保存时只写顶层 `bindings`
 
 ### POST `/api/openclaw/route/preview`
 路由预览。根据 `meta` 返回命中 Agent、命中规则和 trace。

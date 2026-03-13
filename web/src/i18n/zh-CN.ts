@@ -46,7 +46,7 @@ const zhCN: Translations = {
 
   login: {
     title: 'ClawPanel',
-    subtitle: 'OpenClaw 智能管理面板',
+    subtitle: 'OpenClaw 管理面板',
     passwordLabel: '管理密码',
     passwordPlaceholder: '请输入 ADMIN_TOKEN',
     loginButton: '登 录',
@@ -243,7 +243,7 @@ const zhCN: Translations = {
     noMatch: '暂无匹配的技能',
     noSkillsFound: '没有找到相关技能',
     clawHubTitle: 'ClawHub 技能商店',
-    clawHubSubtitle: '发现更多社区贡献的优质技能',
+    clawHubSubtitle: '浏览和安装社区技能',
     syncStore: '同步商店',
     syncing: '同步中...',
     visitSite: '前往官网',
@@ -281,7 +281,7 @@ const zhCN: Translations = {
 
   sysConfig: {
     title: '系统配置',
-    subtitle: 'OpenClaw 深度配置管理',
+    subtitle: 'OpenClaw 系统配置',
     tabModels: '模型配置',
     tabIdentity: '身份 & 消息',
     tabGeneral: '通用配置',

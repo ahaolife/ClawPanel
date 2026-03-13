@@ -317,7 +317,10 @@ func SaveChannel(cfg *config.Config, procMgr *process.Manager) gin.HandlerFunc {
 			body = normalizeTelegramChannelConfig(body)
 		}
 		if id == "feishu" {
-			body = normalizeFeishuChannelConfig(body)
+			if err := normalizeFeishuChannelConfigInPlace(body); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": err.Error()})
+				return
+			}
 		}
 		if id == "wecom" {
 			body = normalizeWeComChannelConfig(body)
@@ -510,25 +513,44 @@ func splitListInput(raw string) []string {
 	return items
 }
 
-func normalizeFeishuChannelConfig(body map[string]interface{}) map[string]interface{} {
+func normalizeFeishuRequireMention(raw interface{}) (bool, bool, error) {
+	switch v := raw.(type) {
+	case nil:
+		return false, false, nil
+	case bool:
+		return v, true, nil
+	case string:
+		trimmed := strings.TrimSpace(v)
+		switch {
+		case trimmed == "":
+			return false, false, nil
+		case strings.EqualFold(trimmed, "true"):
+			return true, true, nil
+		case strings.EqualFold(trimmed, "false"):
+			return false, true, nil
+		default:
+			return false, false, fmt.Errorf("requireMention 仅支持 true/false，当前值为 %q", trimmed)
+		}
+	default:
+		return false, false, fmt.Errorf("requireMention 仅支持 true/false")
+	}
+}
+
+func normalizeFeishuChannelConfigInPlace(body map[string]interface{}) error {
 	if body == nil {
-		return map[string]interface{}{}
+		return nil
 	}
 	delete(body, "dmScope")
 
 	if raw, exists := body["requireMention"]; exists {
-		switch v := raw.(type) {
-		case string:
-			switch trimmed := strings.TrimSpace(v); trimmed {
-			case "":
-				delete(body, "requireMention")
-			case "true":
-				body["requireMention"] = true
-			case "false":
-				body["requireMention"] = false
-			default:
-				body["requireMention"] = trimmed
-			}
+		normalized, keep, err := normalizeFeishuRequireMention(raw)
+		if err != nil {
+			return err
+		}
+		if keep {
+			body["requireMention"] = normalized
+		} else {
+			delete(body, "requireMention")
 		}
 	}
 
@@ -701,6 +723,14 @@ func normalizeFeishuChannelConfig(body map[string]interface{}) map[string]interf
 		body["groupPolicy"] = "open"
 	}
 
+	return nil
+}
+
+func normalizeFeishuChannelConfig(body map[string]interface{}) map[string]interface{} {
+	if body == nil {
+		return map[string]interface{}{}
+	}
+	_ = normalizeFeishuChannelConfigInPlace(body)
 	return body
 }
 
@@ -1175,7 +1205,7 @@ func patchModelsJSON(cfg *config.Config) {
 }
 
 func patchModelsJSONForAgent(cfg *config.Config, agentID string) {
-	modelsPath := resolveAgentPath(cfg, agentID, "agent", "models.json")
+	modelsPath := filepath.Join(resolveAgentConfigDir(cfg, agentID), "models.json")
 	data, err := os.ReadFile(modelsPath)
 	if err != nil {
 		return

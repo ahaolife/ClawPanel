@@ -503,7 +503,7 @@ func PreviewOpenClawRoute(cfg *config.Config) gin.HandlerFunc {
 }
 
 func stageAgentSessionsRemoval(cfg *config.Config, agentID string) (string, string, error) {
-	sessionsDir := resolveAgentPath(cfg, agentID, "sessions")
+	sessionsDir := resolveAgentSessionsDir(cfg, agentID)
 	info, err := os.Stat(sessionsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -711,8 +711,7 @@ func setBindingsToConfig(ocConfig, agentsCfg map[string]interface{}, bindings []
 		ocConfig["bindings"] = mapSliceToAny(normalized)
 	}
 	if agentsCfg != nil {
-		// 向后兼容旧实现：同步写入 agents.bindings
-		agentsCfg["bindings"] = mapSliceToAny(normalized)
+		delete(agentsCfg, "bindings")
 	}
 }
 
@@ -838,6 +837,13 @@ func stripUnsupportedAgentContextOverrides(agent map[string]interface{}) {
 	}
 	delete(agent, "contextTokens")
 	delete(agent, "compaction")
+	if tools, ok := agent["tools"].(map[string]interface{}); ok && tools != nil {
+		delete(tools, "agentToAgent")
+		delete(tools, "sessions")
+		if len(tools) == 0 {
+			delete(agent, "tools")
+		}
+	}
 }
 
 func extractAgentIdentityMap(agent map[string]interface{}) map[string]interface{} {
@@ -872,11 +878,8 @@ func shouldStrictValidateAgentAvatar(existingAgent, payload map[string]interface
 func validateAgentUniqueness(cfg *config.Config, list []map[string]interface{}, id, workspace, agentDir, skipID string) error {
 	// workspace 允许绝对路径在 OpenClawDir 外部（如外部硬盘），仅做归一化
 	workspace = normalizeAgentPath(cfg.OpenClawDir, workspace)
-	var err error
-	agentDir, err = normalizeAgentPathWithinBase(cfg.OpenClawDir, agentDir)
-	if err != nil {
-		return fmt.Errorf("agentDir 必须位于 OpenClaw 目录内")
-	}
+	agentDir = normalizeAgentPath(cfg.OpenClawDir, agentDir)
+	canonicalAgentDir := canonicalizeNormalizedAgentDir(agentDir)
 	for _, item := range list {
 		curID := strings.TrimSpace(toString(item["id"]))
 		if curID == "" || curID == skipID {
@@ -889,8 +892,12 @@ func validateAgentUniqueness(cfg *config.Config, list []map[string]interface{}, 
 		if workspace != "" && workspace == normalizedWorkspace {
 			return fmt.Errorf("workspace 已被占用: %s", workspace)
 		}
-		normalizedAgentDir, err := normalizeAgentPathWithinBase(cfg.OpenClawDir, toString(item["agentDir"]))
-		if err == nil && agentDir != "" && agentDir == normalizedAgentDir {
+		normalizedAgentDir := normalizeAgentPath(cfg.OpenClawDir, toString(item["agentDir"]))
+		canonicalExistingAgentDir := canonicalizeNormalizedAgentDir(normalizedAgentDir)
+		if agentDir != "" && (agentDir == normalizedAgentDir ||
+			canonicalAgentDir == canonicalExistingAgentDir ||
+			agentDir == filepath.Join(canonicalExistingAgentDir, "agent") ||
+			normalizedAgentDir == filepath.Join(canonicalAgentDir, "agent")) {
 			return fmt.Errorf("agentDir 已被占用: %s", agentDir)
 		}
 	}
@@ -925,7 +932,7 @@ func listContainsAgent(list []map[string]interface{}, agentID string) bool {
 }
 
 func getAgentSessionStats(cfg *config.Config, agentID string) (int, int64) {
-	sessionsPath := resolveAgentPath(cfg, agentID, "sessions", "sessions.json")
+	sessionsPath := filepath.Join(resolveAgentSessionsDir(cfg, agentID), "sessions.json")
 	data, err := os.ReadFile(sessionsPath)
 	if err != nil {
 		return 0, 0

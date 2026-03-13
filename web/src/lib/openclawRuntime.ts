@@ -34,7 +34,7 @@ export function resolveOpenClawRuntime(openclawStatus?: any, processStatus?: any
       processRunning,
       gatewayRunning,
       title: 'OpenClaw 尚未安装或配置',
-      message: '当前页面可浏览，但模型、通道和网关相关能力尚未就绪。',
+      message: '当前页面可浏览，但模型、通道和网关相关功能暂时不可用。',
     };
   }
 
