@@ -2,6 +2,7 @@
 set -euo pipefail
 
 GITHUB_REPO=${GITHUB_REPO:-zhaoxinyi02/ClawPanel}
+GITEE_REPO=${GITEE_REPO:-zxy000006/ClawPanel}
 TARGET_ROOT=${TARGET_ROOT:-/data/clawpanel/update}
 RELEASE_DIR="$TARGET_ROOT/releases"
 SCRIPT_DIR="$TARGET_ROOT/scripts"
@@ -26,6 +27,12 @@ command -v python3 >/dev/null 2>&1 || err "缺少 python3"
 command -v curl >/dev/null 2>&1 || err "缺少 curl"
 
 mkdir -p "$RELEASE_DIR" "$SCRIPT_DIR" "$PLUGIN_DIR" "$BIN_DIR" "$SYNC_ROOT"
+
+download_raw() {
+  local url="$1"
+  local dest="$2"
+  curl --http1.1 --progress-bar --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 1800 -fL "$url" -o "$dest"
+}
 
 python3 - <<'PY' "$GITHUB_REPO" "$SYNC_ROOT"
 import json
@@ -81,24 +88,19 @@ cp -f "$latest_pro"/* "$RELEASE_DIR/"
 log "同步最新 Lite Release: $(basename "$latest_lite")"
 cp -f "$latest_lite"/* "$RELEASE_DIR/"
 
-REPO_ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
-cp -f "$REPO_ROOT/release/update-pro.json" "$TARGET_ROOT/update-pro.json"
-cp -f "$REPO_ROOT/release/update-lite.json" "$TARGET_ROOT/update-lite.json"
-cp -f "$REPO_ROOT/release/update.json" "$TARGET_ROOT/update.json"
-cp -f "$REPO_ROOT/plugins/registry.json" "$PLUGIN_DIR/registry.json"
+log "同步更新元数据与插件注册表..."
+download_raw "https://gitee.com/${GITEE_REPO}/raw/main/release/update-pro.json" "$TARGET_ROOT/update-pro.json"
+download_raw "https://gitee.com/${GITEE_REPO}/raw/main/release/update-lite.json" "$TARGET_ROOT/update-lite.json"
+download_raw "https://gitee.com/${GITEE_REPO}/raw/main/release/update.json" "$TARGET_ROOT/update.json"
+download_raw "https://gitee.com/${GITEE_REPO}/raw/main/plugins/registry.json" "$PLUGIN_DIR/registry.json"
 
-cp -f "$REPO_ROOT/scripts/install.sh" "$SCRIPT_DIR/install.sh"
-cp -f "$REPO_ROOT/scripts/install-pro.sh" "$SCRIPT_DIR/install-pro.sh"
-cp -f "$REPO_ROOT/scripts/install-lite.sh" "$SCRIPT_DIR/install-lite.sh"
-cp -f "$REPO_ROOT/scripts/install-lite-macos.sh" "$SCRIPT_DIR/install-lite-macos.sh"
-cp -f "$REPO_ROOT/scripts/install-lite.ps1" "$SCRIPT_DIR/install-lite.ps1"
-cp -f "$REPO_ROOT/scripts/install.ps1" "$SCRIPT_DIR/install.ps1"
-cp -f "$REPO_ROOT/scripts/uninstall-lite.sh" "$SCRIPT_DIR/uninstall-lite.sh"
-cp -f "$REPO_ROOT/scripts/uninstall-lite-macos.sh" "$SCRIPT_DIR/uninstall-lite-macos.sh"
-cp -f "$REPO_ROOT/scripts/uninstall-lite.ps1" "$SCRIPT_DIR/uninstall-lite.ps1"
+log "同步安装/卸载脚本..."
+for f in install.sh install-pro.sh install-lite.sh install-lite-macos.sh install-lite.ps1 install.ps1 uninstall-lite.sh uninstall-lite-macos.sh uninstall-lite.ps1 install-local-pro.sh install-local-lite.sh install-local-pro.ps1 install-local-lite.ps1; do
+  download_raw "https://gitee.com/${GITEE_REPO}/raw/main/scripts/${f}" "$SCRIPT_DIR/${f}"
+done
 
-if [ -f "$REPO_ROOT/release/openclaw-offline/openclaw-2026.2.26-linux-x64-prefix.tar.gz" ]; then
-  cp -f "$REPO_ROOT/release/openclaw-offline/openclaw-2026.2.26-linux-x64-prefix.tar.gz" "$BIN_DIR/"
+if [ ! -f "$BIN_DIR/openclaw-2026.2.26-linux-x64-prefix.tar.gz" ]; then
+  warn "未自动同步 openclaw-2026.2.26-linux-x64-prefix.tar.gz，如需 Linux 离线 OpenClaw 安装，请手动补传到 $BIN_DIR"
 fi
 
 chmod 755 "$SCRIPT_DIR"/*.sh
