@@ -774,7 +774,26 @@ export default function Channels() {
     api.getRequests().then(r => { if (r.ok) setRequests(r.requests || []); });
   };
 
-  useEffect(() => { reload(); loadSoftware(); loadNapcatStatus(); loadInstalledPlugins(); loadQQChannelState(); }, []);
+  useEffect(() => {
+    // Batch all initial loads in parallel for faster page load
+    Promise.all([
+      api.getStatus().then(r => { if (r.ok) setStatus(r); }),
+      api.getOpenClawConfig().then(r => {
+        if (!r.ok) return;
+        const nextConfig = r.config || {};
+        setOcConfig(nextConfig);
+        setChannelDrafts({});
+        setChannelFieldTextDrafts({});
+        syncFeishuUiState(nextConfig);
+      }),
+      loadFeishuDmDiagnosis(),
+      api.getRequests().then(r => { if (r.ok) setRequests(r.requests || []); }),
+      api.getSoftwareList().then(r => { if (r.ok) { setSoftwareList(r.software || []); if (r.platform) setServerPlatform(r.platform); } }).catch(() => {}),
+      api.napcatStatus().then(r => { if (r.ok) setNapcatStatus(r.status); }).catch(() => {}),
+      api.getInstalledPlugins().then((r: any) => { if (r.ok) setInstalledPlugins(r.plugins || []); }).catch(() => {}),
+      api.getQQChannelState().then((r: any) => { if (r.ok) setQQChannelState(r.state || null); }).catch(() => {}),
+    ]);
+  }, []);
   // 自动选择第一个已启用的渠道（而非硬编码 QQ）
   useEffect(() => {
     if (selectedChannel) return; // 用户已手动选择
