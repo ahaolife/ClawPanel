@@ -408,9 +408,8 @@ const CHANNEL_DEFS: ChannelDef[] = [
     ] },
   { id: 'wecom-app', label: '企业微信（自建应用）', description: '企业微信自建应用，支持更完整 API 与微信入口', type: 'plugin',
     configFields: [
-      { key: 'webhookPath', label: 'Webhook Path', type: 'text', placeholder: '/wecom-app', help: '保持默认一般即可' },
       { key: 'token', label: 'Token', type: 'password', help: '企业微信回调配置中的 Token' },
-      { key: 'encodingAESKey', label: 'EncodingAESKey', type: 'password', help: '43 位字符' },
+      { key: 'encodingAesKey', label: 'EncodingAESKey', type: 'password', help: '43 位字符' },
       { key: 'corpId', label: 'Corp ID', type: 'text', help: '企业 ID' },
       { key: 'corpSecret', label: 'Corp Secret', type: 'password', help: '应用 Secret' },
       { key: 'agentId', label: 'Agent ID', type: 'text', help: '应用 Agent ID' },
@@ -455,7 +454,7 @@ const CHANNEL_REQUIRED_FIELDS: Record<string, string[]> = {
   qqbot: ['appId', 'clientSecret'],
   dingtalk: ['clientId', 'clientSecret'],
   wecom: ['botId', 'secret'],
-  'wecom-app': ['token', 'encodingAESKey', 'corpId', 'corpSecret', 'agentId'],
+  'wecom-app': ['token', 'encodingAesKey', 'corpId', 'corpSecret', 'agentId'],
   msteams: ['appId', 'appPassword'],
   mattermost: ['url', 'token'],
   line: ['channelAccessToken', 'channelSecret'],
@@ -499,7 +498,10 @@ function isQQActuallyInstalled(installedPlugins: any[], qqChannelState: any) {
 }
 // Determine channel status: 'enabled' (green), 'configured' (red/orange), 'unconfigured' (gray)
 function getChannelStatus(ch: ChannelDef, ocConfig: any): 'enabled' | 'configured' | 'unconfigured' {
-  const chConf = ocConfig?.channels?.[ch.id] || {};
+  // wecom-app is backed by channels.wecom.agent
+  const chConf = ch.id === 'wecom-app'
+    ? (() => { const w = ocConfig?.channels?.wecom; return isPlainObject(w?.agent) ? { ...w.agent, enabled: w?.enabled } : {}; })()
+    : (ocConfig?.channels?.[ch.id] || {});
   const pluginConf = ocConfig?.plugins?.entries?.[ch.id] || {};
   // 飞书特殊处理：任一变体 enabled 即视为 enabled
   const isEnabled = ch.id === 'feishu'
@@ -736,6 +738,10 @@ export default function Channels() {
     if (channelId === 'wecom') {
       return installedPlugins.some((p: any) => p.id === 'wecom' || p.id === 'wecom-openclaw-plugin');
     }
+    // 企业微信自建应用：@sunnoy/wecom 插件 id 为 wecom
+    if (channelId === 'wecom-app') {
+      return installedPlugins.some((p: any) => p.id === 'wecom' || p.id === 'wecom-app');
+    }
     // Check if plugin extension is installed (in extensions dir or plugins.installs)
     return installedPlugins.some((p: any) => p.id === channelId);
   };
@@ -840,6 +846,13 @@ export default function Channels() {
   const ocPlugins = ocConfig?.plugins?.entries || {};
   const getEffectiveChannelConfig = (channelId: string) => {
     if (isPlainObject(channelDrafts[channelId])) return channelDrafts[channelId];
+    // wecom-app is backed by channels.wecom.agent in openclaw.json
+    if (channelId === 'wecom-app') {
+      const wecom = ocChannels['wecom'] as any;
+      const agent = isPlainObject(wecom?.agent) ? { ...wecom.agent } : {};
+      if (wecom?.enabled !== undefined) agent['enabled'] = wecom.enabled;
+      return agent;
+    }
     if (channelId === 'qqbot' && isPlainObject(ocChannels[channelId])) {
       const cfg = { ...ocChannels[channelId] } as any;
       if (!String(cfg.clientSecret || '').trim() && String(cfg.appSecret || '').trim()) {
@@ -1113,6 +1126,8 @@ export default function Channels() {
     setSearchParams(next, { replace: true });
   };
 
+  const WECOM_MUTEX: Record<string, string> = { 'wecom': 'wecom-app', 'wecom-app': 'wecom' };
+
   const handleToggleEnabled = async (channelId: string) => {
     const newEnabled = !isChannelEnabled(channelId);
     if (newEnabled) {
@@ -1124,6 +1139,12 @@ export default function Channels() {
       }
     }
     try {
+      // 企微互斥：开启其中一个时自动关闭另一个
+      const mutexId = WECOM_MUTEX[channelId];
+      if (newEnabled && mutexId && isChannelEnabled(mutexId)) {
+        await api.toggleChannel(mutexId, false);
+        await api.updatePlugin('wecom', { enabled: false });
+      }
       const r = await api.toggleChannel(channelId, newEnabled);
       if (r.ok) {
         setMsg(r.message || (newEnabled ? t.channels.channelEnabled : t.channels.channelDisabled));
@@ -1152,10 +1173,19 @@ export default function Channels() {
       }
       const r = await api.updateChannel(currentDef.id, chData);
       if (!r.ok) throw new Error(r.error || t.channels.saveFailed);
+      // 企微互斥：保存并启用时自动关闭另一个
+      const mutexId = WECOM_MUTEX[currentDef.id];
+      if (enabledState && mutexId && isChannelEnabled(mutexId)) {
+        await api.toggleChannel(mutexId, false);
+        await api.updatePlugin('wecom', { enabled: false });
+      }
       // 飞书特殊处理：保存时操作当前活跃变体的 plugin entry
       if (currentDef.id === 'feishu') {
         const entryId = getFeishuPluginEntryId(ocConfig);
         await api.updatePlugin(entryId, { enabled: enabledState });
+      } else if (currentDef.id === 'wecom-app') {
+        // wecom-app 复用 wecom 插件，操作 wecom entry 而非创建无效的 wecom-app entry
+        await api.updatePlugin('wecom', { enabled: enabledState });
       } else if (currentDef.type === 'plugin') {
         await api.updatePlugin(currentDef.id, { enabled: enabledState });
       }
@@ -2468,6 +2498,12 @@ export default function Channels() {
                   <div className="font-semibold text-amber-900 dark:text-amber-100">飞书当前处于配对模式</div>
                   <div>首次私聊机器人时，OpenClaw 会返回 pairing code。Lite 版保存有凭证时会优先写成免配对模式；如果你看到这里，重新保存一次配置通常就会改成免配对。</div>
                   <div>若仍需手动审批，可在服务器执行 <span className="font-mono">clawlite-openclaw pairing list feishu</span> 查看待审批请求，再执行 <span className="font-mono">clawlite-openclaw pairing approve feishu &lt;code&gt;</span> 完成授权。</div>
+                </div>
+              )}
+
+              {(currentDef.id === 'wecom' || currentDef.id === 'wecom-app') && (
+                <div className="rounded-lg border border-blue-200 dark:border-blue-800/40 bg-blue-50/80 dark:bg-blue-900/10 px-4 py-3 text-xs text-blue-700 dark:text-blue-300 leading-relaxed">
+                  <span className="font-semibold">企业微信两种模式互斥：</span>智能机器人与自建应用共用同一 channel，启用其中一个会自动关闭另一个。
                 </div>
               )}
 

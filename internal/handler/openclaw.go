@@ -274,6 +274,20 @@ func GetChannels(cfg *config.Config) gin.HandlerFunc {
 		if plugins == nil {
 			plugins = map[string]interface{}{}
 		}
+		// Expose channels.wecom.agent as a virtual "wecom-app" channel for the panel UI
+		if wecom, ok := channels["wecom"].(map[string]interface{}); ok {
+			if agent, ok := wecom["agent"].(map[string]interface{}); ok && len(agent) > 0 {
+				webhookApp := map[string]interface{}{}
+				for k, v := range agent {
+					webhookApp[k] = v
+				}
+				// Also carry enabled state from parent wecom channel
+				if enabled, ok := wecom["enabled"]; ok {
+					webhookApp["enabled"] = enabled
+				}
+				channels["wecom-app"] = webhookApp
+			}
+		}
 		c.JSON(http.StatusOK, gin.H{"ok": true, "channels": channels, "plugins": plugins})
 	}
 }
@@ -330,6 +344,51 @@ func SaveChannel(cfg *config.Config, procMgr *process.Manager) gin.HandlerFunc {
 		}
 		if id == "wecom" {
 			body = normalizeWeComChannelConfig(body)
+		}
+		// wecom-app is a virtual channel backed by channels.wecom.agent
+		if id == "wecom-app" {
+			wecom, _ := channels["wecom"].(map[string]interface{})
+			if wecom == nil {
+				wecom = map[string]interface{}{}
+			}
+			agent := map[string]interface{}{}
+			for _, k := range []string{"corpId", "corpSecret", "agentId", "token", "encodingAesKey"} {
+				if v, ok := body[k]; ok {
+					agent[k] = v
+				}
+			}
+			wecom["agent"] = agent
+			// carry top-level token/encodingAesKey for wecom channel too
+			if t, ok := agent["token"].(string); ok && t != "" {
+				wecom["token"] = t
+			}
+			if k, ok := agent["encodingAesKey"].(string); ok && k != "" {
+				wecom["encodingAesKey"] = k
+			}
+			if _, hasEnabled := body["enabled"]; hasEnabled {
+				wecom["enabled"] = body["enabled"]
+			} else if _, ok := wecom["enabled"]; !ok {
+				wecom["enabled"] = true
+			}
+			channels["wecom"] = wecom
+			ocConfig["channels"] = channels
+			if err := cfg.WriteOpenClawJSON(ocConfig); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
+				return
+			}
+			resp := gin.H{"ok": true}
+			if procMgr != nil && procMgr.GetStatus().Running {
+				if err := procMgr.Restart(); err != nil {
+					resp["message"] = "企业微信自建应用配置已保存，但自动重启网关失败，请手动重启 OpenClaw 网关后生效"
+				} else {
+					resp["message"] = "企业微信自建应用配置已保存，并已自动重启网关使配置生效"
+					resp["restarted"] = true
+				}
+			} else {
+				resp["message"] = "企业微信自建应用配置已保存；OpenClaw 网关下次启动时生效"
+			}
+			c.JSON(http.StatusOK, resp)
+			return
 		}
 		// 保留现有的 enabled 状态：如果前端未传 enabled 字段，沿用原有值
 		if _, hasEnabled := body["enabled"]; !hasEnabled {
@@ -1023,13 +1082,6 @@ func ToggleChannel(cfg *config.Config, procMgr *process.Manager, napcatMon *moni
 		if channels == nil {
 			channels = map[string]interface{}{}
 		}
-		ch, _ := channels[req.ChannelID].(map[string]interface{})
-		if ch == nil {
-			ch = map[string]interface{}{}
-		}
-		ch["enabled"] = req.Enabled
-		channels[req.ChannelID] = ch
-		ocConfig["channels"] = channels
 
 		// 更新 plugins.entries
 		plugins, _ := ocConfig["plugins"].(map[string]interface{})
@@ -1041,39 +1093,110 @@ func ToggleChannel(cfg *config.Config, procMgr *process.Manager, napcatMon *moni
 			entries = map[string]interface{}{}
 		}
 
-		// 飞书特殊处理：确定当前活跃的 plugin entry ID，启用/禁用正确的条目
-		if req.ChannelID == "feishu" {
-			activeEntryID := resolveActiveFeishuEntryID(entries)
-			pe, _ := entries[activeEntryID].(map[string]interface{})
-			if pe == nil {
-				pe = map[string]interface{}{}
-			}
-			pe["enabled"] = req.Enabled
-			entries[activeEntryID] = pe
-			// 禁用所有其他飞书变体
-			for _, othID := range feishuAllPluginIDs {
-				if othID == activeEntryID {
-					continue
+		// 企微互斥：开启其中一个时自动关闭另一个
+		wecomMutex := map[string]string{"wecom": "wecom-app", "wecom-app": "wecom"}
+		if req.Enabled {
+			if mutexID, ok := wecomMutex[req.ChannelID]; ok {
+				// 关闭另一个 channel
+				if other, ok2 := channels[mutexID].(map[string]interface{}); ok2 {
+					other["enabled"] = false
+					channels[mutexID] = other
 				}
-				if otherEntry, ok := entries[othID].(map[string]interface{}); ok {
-					otherEntry["enabled"] = false
-					entries[othID] = otherEntry
+				// 关闭另一个 plugin entry（两个都映射到 wecom entry）
+				if pe, ok2 := entries["wecom"].(map[string]interface{}); ok2 {
+					pe["enabled"] = false
+					entries["wecom"] = pe
+				}
+				// 关闭 channels.wecom 的 enabled（另一个方向时）
+				if mutexID == "wecom" {
+					if wch, ok2 := channels["wecom"].(map[string]interface{}); ok2 {
+						wch["enabled"] = false
+						channels["wecom"] = wch
+					}
 				}
 			}
-		} else {
-			pe, _ := entries[req.ChannelID].(map[string]interface{})
-			if pe == nil {
-				pe = map[string]interface{}{}
-			}
-			pe["enabled"] = req.Enabled
-			entries[req.ChannelID] = pe
 		}
+
+		// wecom-app 是虚拟通道，实际写到 channels.wecom（兼容 @sunnoy/wecom 插件读取 channels.wecom 配置）
+		if req.ChannelID == "wecom-app" {
+			wecom, _ := channels["wecom"].(map[string]interface{})
+			if wecom == nil {
+				wecom = map[string]interface{}{}
+			}
+			wecom["enabled"] = req.Enabled
+			channels["wecom"] = wecom
+			// plugin entry 也用 wecom
+			pe, _ := entries["wecom"].(map[string]interface{})
+			if pe == nil {
+				pe = map[string]interface{}{}
+			}
+			pe["enabled"] = req.Enabled
+			entries["wecom"] = pe
+		} else {
+			ch, _ := channels[req.ChannelID].(map[string]interface{})
+			if ch == nil {
+				ch = map[string]interface{}{}
+			}
+			ch["enabled"] = req.Enabled
+			channels[req.ChannelID] = ch
+
+			// 飞书特殊处理：确定当前活跃的 plugin entry ID，启用/禁用正确的条目
+			if req.ChannelID == "feishu" {
+				activeEntryID := resolveActiveFeishuEntryID(entries)
+				pe, _ := entries[activeEntryID].(map[string]interface{})
+				if pe == nil {
+					pe = map[string]interface{}{}
+				}
+				pe["enabled"] = req.Enabled
+				entries[activeEntryID] = pe
+				// 禁用所有其他飞书变体
+				for _, othID := range feishuAllPluginIDs {
+					if othID == activeEntryID {
+						continue
+					}
+					if otherEntry, ok := entries[othID].(map[string]interface{}); ok {
+						otherEntry["enabled"] = false
+						entries[othID] = otherEntry
+					}
+				}
+			} else {
+				pe, _ := entries[req.ChannelID].(map[string]interface{})
+				if pe == nil {
+					pe = map[string]interface{}{}
+				}
+				pe["enabled"] = req.Enabled
+				entries[req.ChannelID] = pe
+			}
+		}
+		ocConfig["channels"] = channels
 		plugins["entries"] = entries
 		ocConfig["plugins"] = plugins
 
 		if err := cfg.WriteOpenClawJSON(ocConfig); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
 			return
+		}
+
+		// 企微插件目录弹出式切换：wecom-app 开启时把插件移入 extensions，wecom 开启时移出
+		if cfg.OpenClawDir != "" {
+			extDir := filepath.Join(cfg.OpenClawDir, "extensions")
+			activeDir := filepath.Join(extDir, "wecom-app")
+			stashDir := filepath.Join(filepath.Dir(cfg.OpenClawDir), "wecom-app-plugin")
+			if req.ChannelID == "wecom-app" && req.Enabled {
+				// 移入：把 stash 目录 rename 到 extensions/wecom-app
+				if _, err2 := os.Stat(stashDir); err2 == nil {
+					if _, err3 := os.Stat(activeDir); err3 != nil {
+						_ = os.Rename(stashDir, activeDir)
+					}
+				}
+			} else if (req.ChannelID == "wecom" || req.ChannelID == "wecom-app") && !req.Enabled || (req.ChannelID == "wecom" && req.Enabled) {
+				// 移出：把 extensions/wecom-app rename 到 stash
+				if _, err2 := os.Stat(activeDir); err2 == nil {
+					if _, err3 := os.Stat(stashDir); err3 != nil {
+						_ = os.Rename(activeDir, stashDir)
+					}
+				}
+			}
 		}
 
 		// 如果是 QQ 通道，关闭时停止 NapCat 并暂停监控；开启时恢复监控

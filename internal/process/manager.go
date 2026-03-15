@@ -1425,9 +1425,11 @@ async function shouldInterceptWorkflow(payload) {
 func (m *Manager) patchWecomPluginChannel(ocDir string) {
 	paths := []string{}
 	if ocDir != "" {
+		paths = append(paths, filepath.Join(ocDir, "extensions", "wecom", "dist", "index.esm.js"))
 		paths = append(paths, filepath.Join(ocDir, "extensions", "wecom", "dist", "index.js"))
 	}
 	if m.cfg != nil && m.cfg.OpenClawApp != "" {
+		paths = append(paths, filepath.Join(m.cfg.OpenClawApp, "extensions", "wecom", "dist", "index.esm.js"))
 		paths = append(paths, filepath.Join(m.cfg.OpenClawApp, "extensions", "wecom", "dist", "index.js"))
 	}
 	managerPort := 19527
