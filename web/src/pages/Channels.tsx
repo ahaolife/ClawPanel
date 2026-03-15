@@ -408,9 +408,8 @@ const CHANNEL_DEFS: ChannelDef[] = [
     ] },
   { id: 'wecom-app', label: '企业微信（自建应用）', description: '企业微信自建应用，支持更完整 API 与微信入口', type: 'plugin',
     configFields: [
-      { key: 'webhookPath', label: 'Webhook Path', type: 'text', placeholder: '/wecom-app', help: '保持默认一般即可' },
       { key: 'token', label: 'Token', type: 'password', help: '企业微信回调配置中的 Token' },
-      { key: 'encodingAESKey', label: 'EncodingAESKey', type: 'password', help: '43 位字符' },
+      { key: 'encodingAesKey', label: 'EncodingAESKey', type: 'password', help: '43 位字符' },
       { key: 'corpId', label: 'Corp ID', type: 'text', help: '企业 ID' },
       { key: 'corpSecret', label: 'Corp Secret', type: 'password', help: '应用 Secret' },
       { key: 'agentId', label: 'Agent ID', type: 'text', help: '应用 Agent ID' },
@@ -455,7 +454,7 @@ const CHANNEL_REQUIRED_FIELDS: Record<string, string[]> = {
   qqbot: ['appId', 'clientSecret'],
   dingtalk: ['clientId', 'clientSecret'],
   wecom: ['botId', 'secret'],
-  'wecom-app': ['token', 'encodingAESKey', 'corpId', 'corpSecret', 'agentId'],
+  'wecom-app': ['token', 'encodingAesKey', 'corpId', 'corpSecret', 'agentId'],
   msteams: ['appId', 'appPassword'],
   mattermost: ['url', 'token'],
   line: ['channelAccessToken', 'channelSecret'],
@@ -486,7 +485,10 @@ function isQQActuallyInstalled(installedPlugins: any[], qqChannelState: any) {
 }
 // Determine channel status: 'enabled' (green), 'configured' (red/orange), 'unconfigured' (gray)
 function getChannelStatus(ch: ChannelDef, ocConfig: any): 'enabled' | 'configured' | 'unconfigured' {
-  const chConf = ocConfig?.channels?.[ch.id] || {};
+  // wecom-app is backed by channels.wecom.agent
+  const chConf = ch.id === 'wecom-app'
+    ? (() => { const w = ocConfig?.channels?.wecom; return isPlainObject(w?.agent) ? { ...w.agent, enabled: w?.enabled } : {}; })()
+    : (ocConfig?.channels?.[ch.id] || {});
   const pluginConf = ocConfig?.plugins?.entries?.[ch.id] || {};
   // 飞书特殊处理：任一变体 enabled 即视为 enabled
   const isEnabled = ch.id === 'feishu'
@@ -723,6 +725,10 @@ export default function Channels() {
     if (channelId === 'wecom') {
       return installedPlugins.some((p: any) => p.id === 'wecom' || p.id === 'wecom-openclaw-plugin');
     }
+    // 企业微信自建应用：@sunnoy/wecom 插件 id 为 wecom
+    if (channelId === 'wecom-app') {
+      return installedPlugins.some((p: any) => p.id === 'wecom' || p.id === 'wecom-app');
+    }
     // Check if plugin extension is installed (in extensions dir or plugins.installs)
     return installedPlugins.some((p: any) => p.id === channelId);
   };
@@ -808,6 +814,13 @@ export default function Channels() {
   const ocPlugins = ocConfig?.plugins?.entries || {};
   const getEffectiveChannelConfig = (channelId: string) => {
     if (isPlainObject(channelDrafts[channelId])) return channelDrafts[channelId];
+    // wecom-app is backed by channels.wecom.agent in openclaw.json
+    if (channelId === 'wecom-app') {
+      const wecom = ocChannels['wecom'] as any;
+      const agent = isPlainObject(wecom?.agent) ? { ...wecom.agent } : {};
+      if (wecom?.enabled !== undefined) agent['enabled'] = wecom.enabled;
+      return agent;
+    }
     if (channelId === 'qqbot' && isPlainObject(ocChannels[channelId])) {
       const cfg = { ...ocChannels[channelId] } as any;
       if (!String(cfg.clientSecret || '').trim() && String(cfg.appSecret || '').trim()) {
@@ -1124,6 +1137,9 @@ export default function Channels() {
       if (currentDef.id === 'feishu') {
         const entryId = getFeishuPluginEntryId(ocConfig);
         await api.updatePlugin(entryId, { enabled: enabledState });
+      } else if (currentDef.id === 'wecom-app') {
+        // wecom-app 复用 wecom 插件，操作 wecom entry 而非创建无效的 wecom-app entry
+        await api.updatePlugin('wecom', { enabled: enabledState });
       } else if (currentDef.type === 'plugin') {
         await api.updatePlugin(currentDef.id, { enabled: enabledState });
       }

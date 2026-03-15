@@ -268,6 +268,20 @@ func GetChannels(cfg *config.Config) gin.HandlerFunc {
 		if plugins == nil {
 			plugins = map[string]interface{}{}
 		}
+		// Expose channels.wecom.agent as a virtual "wecom-app" channel for the panel UI
+		if wecom, ok := channels["wecom"].(map[string]interface{}); ok {
+			if agent, ok := wecom["agent"].(map[string]interface{}); ok && len(agent) > 0 {
+				webhookApp := map[string]interface{}{}
+				for k, v := range agent {
+					webhookApp[k] = v
+				}
+				// Also carry enabled state from parent wecom channel
+				if enabled, ok := wecom["enabled"]; ok {
+					webhookApp["enabled"] = enabled
+				}
+				channels["wecom-app"] = webhookApp
+			}
+		}
 		c.JSON(http.StatusOK, gin.H{"ok": true, "channels": channels, "plugins": plugins})
 	}
 }
@@ -324,6 +338,51 @@ func SaveChannel(cfg *config.Config, procMgr *process.Manager) gin.HandlerFunc {
 		}
 		if id == "wecom" {
 			body = normalizeWeComChannelConfig(body)
+		}
+		// wecom-app is a virtual channel backed by channels.wecom.agent
+		if id == "wecom-app" {
+			wecom, _ := channels["wecom"].(map[string]interface{})
+			if wecom == nil {
+				wecom = map[string]interface{}{}
+			}
+			agent := map[string]interface{}{}
+			for _, k := range []string{"corpId", "corpSecret", "agentId", "token", "encodingAesKey"} {
+				if v, ok := body[k]; ok {
+					agent[k] = v
+				}
+			}
+			wecom["agent"] = agent
+			// carry top-level token/encodingAesKey for wecom channel too
+			if t, ok := agent["token"].(string); ok && t != "" {
+				wecom["token"] = t
+			}
+			if k, ok := agent["encodingAesKey"].(string); ok && k != "" {
+				wecom["encodingAesKey"] = k
+			}
+			if _, hasEnabled := body["enabled"]; hasEnabled {
+				wecom["enabled"] = body["enabled"]
+			} else if _, ok := wecom["enabled"]; !ok {
+				wecom["enabled"] = true
+			}
+			channels["wecom"] = wecom
+			ocConfig["channels"] = channels
+			if err := cfg.WriteOpenClawJSON(ocConfig); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
+				return
+			}
+			resp := gin.H{"ok": true}
+			if procMgr != nil && procMgr.GetStatus().Running {
+				if err := procMgr.Restart(); err != nil {
+					resp["message"] = "企业微信自建应用配置已保存，但自动重启网关失败，请手动重启 OpenClaw 网关后生效"
+				} else {
+					resp["message"] = "企业微信自建应用配置已保存，并已自动重启网关使配置生效"
+					resp["restarted"] = true
+				}
+			} else {
+				resp["message"] = "企业微信自建应用配置已保存；OpenClaw 网关下次启动时生效"
+			}
+			c.JSON(http.StatusOK, resp)
+			return
 		}
 		// 保留现有的 enabled 状态：如果前端未传 enabled 字段，沿用原有值
 		if _, hasEnabled := body["enabled"]; !hasEnabled {

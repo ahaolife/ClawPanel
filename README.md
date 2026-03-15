@@ -259,6 +259,25 @@ irm https://gitee.com/zxy000006/ClawPanel/raw/main/scripts/install.ps1 | iex
 
 或从 [Releases](https://github.com/zhaoxinyi02/ClawPanel/releases) 手动下载 `clawpanel-windows-amd64.exe`，双击或命令行运行。
 
+### 手动更新（面板内更新失败时使用）
+
+> [!TIP]
+> 正常情况下在面板内「系统配置 → 检查更新」即可一键更新。如果你的服务器之前使用旧加速服务器导致更新失败，可运行以下命令手动更新到最新版本，更新后面板内更新功能将恢复正常。
+
+**ClawPanel Pro（Linux / macOS）**
+
+```bash
+curl -fsSL https://gitee.com/zxy000006/ClawPanel/raw/main/scripts/update-pro.sh | sudo bash
+```
+
+**ClawPanel Lite（Linux）**
+
+```bash
+curl -fsSL https://gitee.com/zxy000006/ClawPanel/raw/main/scripts/update-lite.sh | sudo bash
+```
+
+> 脚本会自动：检测当前版本 → 从加速服务器下载最新版（失败自动切 GitHub）→ 停服 → 替换二进制 → 重启服务 → 验证启动。更新失败时自动回滚。
+
 ### 一键卸载
 
 **ClawPanel Lite（Linux）**
