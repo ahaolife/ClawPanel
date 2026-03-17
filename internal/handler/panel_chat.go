@@ -15,7 +15,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -327,7 +326,7 @@ func newPanelChatExecCommand(ctx context.Context, cfg *config.Config, session pa
 	args := append([]string{}, prefixArgs...)
 	args = append(args, "agent", "--session-id", session.OpenClawSessionID, "--message", message, "--json")
 	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setPanelChatProcessGroup(cmd)
 	cmd.Dir = cfg.OpenClawDir
 	cmd.Env = append(config.BuildExecEnv(),
 		fmt.Sprintf("OPENCLAW_DIR=%s", cfg.OpenClawDir),
@@ -382,9 +381,7 @@ func runPanelChatMessage(ctx context.Context, cfg *config.Config, session panelC
 	var waitErr error
 	select {
 	case <-ctx.Done():
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
+		killPanelChatProcess(cmd)
 		waitErr = <-waitCh
 	case waitErr = <-waitCh:
 	}
@@ -399,7 +396,7 @@ func runPanelChatMessage(ctx context.Context, cfg *config.Config, session panelC
 		if trimmed == "" {
 			trimmed = waitErr.Error()
 		}
-		return "", fmt.Errorf(trimmed)
+		return "", fmt.Errorf("%s", trimmed)
 	}
 
 	jsonText := extractPanelChatJSON(output.String())
