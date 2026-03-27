@@ -912,6 +912,14 @@ export const mockApi = {
     fakePanelChatSessions = [session, ...fakePanelChatSessions.filter(item => item.id !== id)];
     return { ok: true, session, participants: JSON.parse(JSON.stringify(participants)), messages: JSON.parse(JSON.stringify(fakePanelChatMessages[id])), reply: botMessages[botMessages.length - 1]?.content || '' };
   },
+  cancelPanelChatMessage: async (id: string) => {
+    await delay(80);
+    const session = fakePanelChatSessions.find(item => item.id === id);
+    if (!session) return { ok: false, error: 'not found' };
+    session.processing = false;
+    session.updatedAt = Date.now();
+    return { ok: true, canceled: true, session };
+  },
   deletePanelChatSession: async (id: string) => {
     await delay(150);
     fakePanelChatSessions = fakePanelChatSessions.filter(item => item.id !== id);

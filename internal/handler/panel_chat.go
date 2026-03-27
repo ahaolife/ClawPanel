@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -34,6 +35,9 @@ var panelChatTimestampPrefixRe = regexp.MustCompile(`^\[[^\]]+\]\s*`)
 const panelChatScannerMaxTokenSize = 16 * 1024 * 1024
 
 var panelChatActiveRuns sync.Map
+var panelChatSessionBusy sync.Map
+var panelChatSessionLocks sync.Map
+var panelChatSessionsFileMu sync.Mutex
 
 type panelChatActiveRun struct {
 	cancel context.CancelFunc
@@ -94,6 +98,30 @@ func panelChatMessagesPath(cfg *config.Config, sessionID string) string {
 	return filepath.Join(cfg.DataDir, "panel-chat", "messages", sessionID+".json")
 }
 
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
 func loadPanelChatMessages(cfg *config.Config, sessionID string) ([]map[string]interface{}, error) {
 	path := panelChatMessagesPath(cfg, sessionID)
 	data, err := os.ReadFile(path)
@@ -115,17 +143,14 @@ func loadPanelChatMessages(cfg *config.Config, sessionID string) ([]map[string]i
 
 func savePanelChatMessages(cfg *config.Config, sessionID string, messages []map[string]interface{}) error {
 	path := panelChatMessagesPath(cfg, sessionID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(messages, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	return writeFileAtomic(path, append(data, '\n'), 0o644)
 }
 
-func loadPanelChatSessions(cfg *config.Config) ([]panelChatSession, error) {
+func loadPanelChatSessionsUnlocked(cfg *config.Config) ([]panelChatSession, error) {
 	path := panelChatSessionsPath(cfg)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -158,16 +183,21 @@ func loadPanelChatSessions(cfg *config.Config) ([]panelChatSession, error) {
 	return normalized, nil
 }
 
-func savePanelChatSessions(cfg *config.Config, sessions []panelChatSession) error {
+func loadPanelChatSessions(cfg *config.Config) ([]panelChatSession, error) {
+	return loadPanelChatSessionsUnlocked(cfg)
+}
+
+func savePanelChatSessionsUnlocked(cfg *config.Config, sessions []panelChatSession) error {
 	path := panelChatSessionsPath(cfg)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(sessions, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	return writeFileAtomic(path, append(data, '\n'), 0o644)
+}
+
+func savePanelChatSessions(cfg *config.Config, sessions []panelChatSession) error {
+	return savePanelChatSessionsUnlocked(cfg, sessions)
 }
 
 func sortPanelChatSessions(sessions []panelChatSession) {
@@ -214,6 +244,20 @@ func panelChatRuntimeRoot(cfg *config.Config, sessionID string) string {
 	return filepath.Join(cfg.DataDir, "panel-chat", "runtime", sessionID)
 }
 
+func panelChatSessionLock(sessionID string) *sync.Mutex {
+	lock, _ := panelChatSessionLocks.LoadOrStore(sessionID, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
+func panelChatTryAcquireBusy(sessionID string) bool {
+	_, loaded := panelChatSessionBusy.LoadOrStore(sessionID, struct{}{})
+	return !loaded
+}
+
+func panelChatReleaseBusy(sessionID string) {
+	panelChatSessionBusy.Delete(sessionID)
+}
+
 func ensurePanelChatRuntime(cfg *config.Config, session panelChatSession) (stateDir, configPath, workDir string, err error) {
 	root := panelChatRuntimeRoot(cfg, session.ID)
 	stateDir = filepath.Join(root, "state")
@@ -233,6 +277,18 @@ func ensurePanelChatRuntime(cfg *config.Config, session panelChatSession) (state
 		return "", "", "", err
 	}
 	_ = os.MkdirAll(filepath.Join(dstAgentDir, "sessions"), 0o755)
+	if err = os.MkdirAll(filepath.Join(workDir, "openclaw-work"), 0o755); err != nil {
+		return "", "", "", err
+	}
+	srcWorkspace := resolveAgentWorkspacePath(cfg, session.AgentID)
+	dstWorkspace := filepath.Join(workDir, "openclaw-work", scopedAgentID)
+	if strings.TrimSpace(srcWorkspace) != "" {
+		if err = syncDirPreferSource(srcWorkspace, dstWorkspace); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", "", "", err
+		}
+	} else if err = os.MkdirAll(dstWorkspace, 0o755); err != nil {
+		return "", "", "", err
+	}
 	if err = rewritePanelChatRuntimeConfig(sourceConfigPath, configPath, session); err != nil {
 		return "", "", "", err
 	}
@@ -248,6 +304,60 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return os.WriteFile(dst, data, 0o644)
+}
+
+func syncFileIfNewer(src, dst string, srcInfo os.FileInfo) error {
+	if dstInfo, err := os.Stat(dst); err == nil {
+		if dstInfo.Size() == srcInfo.Size() && !srcInfo.ModTime().After(dstInfo.ModTime()) {
+			return nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Chtimes(dst, time.Now(), srcInfo.ModTime())
+}
+
+func syncDirPreferSource(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return os.ErrNotExist
+	}
+	return filepath.Walk(src, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		return syncFileIfNewer(path, target, info)
+	})
 }
 
 func copyDirWithoutSessions(src, dst string) error {
@@ -307,13 +417,7 @@ func rewritePanelChatRuntimeConfig(srcConfigPath, dstConfigPath string, session 
 		}
 		scopedID := panelChatScopedAgentID(session.ID, session.AgentID)
 		cloned["id"] = scopedID
-		if workspace := strings.TrimSpace(toString(agent["workspace"])); workspace != "" {
-			if loc, err := resolveAgentCoreWorkspaceFromPath(&config.Config{OpenClawDir: filepath.Dir(srcConfigPath), OpenClawWork: ""}, workspace, false); err == nil && strings.TrimSpace(loc.Safe) != "" {
-				cloned["workspace"] = filepath.ToSlash(loc.Safe)
-			} else {
-				cloned["workspace"] = workspace
-			}
-		}
+		cloned["workspace"] = filepath.ToSlash(filepath.Join("openclaw-work", scopedID))
 		cloned["default"] = true
 		newList = append(newList, cloned)
 		break
@@ -414,6 +518,57 @@ func clonePanelChatParticipants(items []panelChatParticipantView) []model.PanelC
 		})
 	}
 	return cloned
+}
+
+func persistPanelChatParticipantSessions(db *sql.DB, sessionID string, updates map[string]string) error {
+	for agentID, openClawSessionID := range updates {
+		if strings.TrimSpace(agentID) == "" || strings.TrimSpace(openClawSessionID) == "" {
+			continue
+		}
+		if err := model.UpdatePanelChatParticipantOpenClawSession(db, sessionID, agentID, openClawSessionID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validatePanelChatParticipants(cfg *config.Config, primaryAgentID string, participantIDs []string, summaryAgentID string) error {
+	_, knownSet := loadAgentIDs(cfg)
+	validateKnown := func(agentID string, field string) error {
+		agentID = strings.TrimSpace(agentID)
+		if agentID == "" {
+			return nil
+		}
+		if err := validateAgentID(agentID); err != nil {
+			return fmt.Errorf("%s: %w", field, err)
+		}
+		if _, ok := knownSet[agentID]; !ok {
+			return fmt.Errorf("%s: agent %s 不存在", field, agentID)
+		}
+		return nil
+	}
+	if err := validateKnown(primaryAgentID, "agentId"); err != nil {
+		return err
+	}
+	participantSet := map[string]struct{}{}
+	for _, agentID := range participantIDs {
+		agentID = strings.TrimSpace(agentID)
+		if err := validateKnown(agentID, "agentIds"); err != nil {
+			return err
+		}
+		if agentID != "" {
+			participantSet[agentID] = struct{}{}
+		}
+	}
+	if err := validateKnown(summaryAgentID, "summaryAgentId"); err != nil {
+		return err
+	}
+	if strings.TrimSpace(summaryAgentID) != "" {
+		if _, ok := participantSet[strings.TrimSpace(summaryAgentID)]; !ok {
+			return fmt.Errorf("summaryAgentId 必须包含在 agentIds 中")
+		}
+	}
+	return nil
 }
 
 func loadPanelChatParticipants(db *sql.DB, cfg *config.Config, session panelChatSession) ([]panelChatParticipantView, error) {
@@ -681,10 +836,10 @@ func newPanelChatExecCommand(ctx context.Context, cfg *config.Config, session pa
 		fmt.Sprintf("OPENCLAW_STATE_DIR=%s", sessionStateDir),
 		fmt.Sprintf("OPENCLAW_CONFIG_PATH=%s", sessionConfigPath),
 	)
-	if cfg.OpenClawWork != "" {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("OPENCLAW_WORK_DIR=%s", cfg.OpenClawWork))
-	} else if sessionWorkDir != "" {
+	if sessionWorkDir != "" {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("OPENCLAW_WORK_DIR=%s", sessionWorkDir))
+	} else if cfg.OpenClawWork != "" {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("OPENCLAW_WORK_DIR=%s", cfg.OpenClawWork))
 	}
 	if cfg.OpenClawApp != "" {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("OPENCLAW_APP=%s", cfg.OpenClawApp))
@@ -809,9 +964,10 @@ func buildGroupChatPrompt(agentName string, participant panelChatParticipantView
 	return strings.Join(lines, "\n")
 }
 
-func executeGroupPanelChat(ctx context.Context, db *sql.DB, cfg *config.Config, session panelChatSession, participants []panelChatParticipantView, existingMessages []map[string]interface{}, userMessage string) ([]map[string]interface{}, string, error) {
+func executeGroupPanelChat(ctx context.Context, cfg *config.Config, session panelChatSession, participants []panelChatParticipantView, existingMessages []map[string]interface{}, userMessage string) ([]map[string]interface{}, string, map[string]string, error) {
 	nameMap := loadPanelChatAgentNameMap(cfg)
 	messages := append([]map[string]interface{}{}, existingMessages...)
+	sessionIDs := map[string]string{}
 	userTimestamp := time.Now().UTC().Format(time.RFC3339)
 	userEntry := map[string]interface{}{
 		"id":          fmt.Sprintf("user-%d", time.Now().UnixNano()),
@@ -857,10 +1013,10 @@ func executeGroupPanelChat(ctx context.Context, db *sql.DB, cfg *config.Config, 
 			}
 		}
 		if strings.TrimSpace(actualSessionID) != "" {
-			_ = model.UpdatePanelChatParticipantOpenClawSession(db, session.ID, participant.AgentID, strings.TrimSpace(actualSessionID))
+			sessionIDs[participant.AgentID] = strings.TrimSpace(actualSessionID)
 		}
 		if err != nil {
-			return messages, lastReply, err
+			return messages, lastReply, sessionIDs, err
 		}
 		reply = sanitizePanelChatContent(reply)
 		if strings.TrimSpace(reply) == "" {
@@ -882,7 +1038,7 @@ func executeGroupPanelChat(ctx context.Context, db *sql.DB, cfg *config.Config, 
 			"timestamp":   time.Now().UTC().Format(time.RFC3339),
 		})
 	}
-	return messages, lastReply, nil
+	return messages, lastReply, sessionIDs, nil
 }
 
 func CancelPanelChatMessage(cfg *config.Config) gin.HandlerFunc {
@@ -892,9 +1048,16 @@ func CancelPanelChatMessage(cfg *config.Config) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "session id required"})
 			return
 		}
+		if _, ok := panelChatSessionBusy.Load(sessionID); !ok {
+			c.JSON(http.StatusConflict, gin.H{"ok": false, "error": "当前会话没有正在进行的请求"})
+			return
+		}
 		if active, ok := panelChatActiveRuns.Load(sessionID); ok {
 			active.(panelChatActiveRun).cancel()
 		}
+		lock := panelChatSessionLock(sessionID)
+		lock.Lock()
+		defer lock.Unlock()
 		if _, err := updatePanelChatSessionState(cfg, sessionID, func(item *panelChatSession) {
 			item.Processing = false
 			item.UpdatedAt = time.Now().UnixMilli()
@@ -998,7 +1161,9 @@ func mergePanelChatTranscripts(existing, incoming []map[string]interface{}) []ma
 }
 
 func updatePanelChatSessionState(cfg *config.Config, sessionID string, mutate func(*panelChatSession)) (*panelChatSession, error) {
-	sessions, err := loadPanelChatSessions(cfg)
+	panelChatSessionsFileMu.Lock()
+	defer panelChatSessionsFileMu.Unlock()
+	sessions, err := loadPanelChatSessionsUnlocked(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -1008,7 +1173,7 @@ func updatePanelChatSessionState(cfg *config.Config, sessionID string, mutate fu
 	}
 	mutate(&sessions[idx])
 	sortPanelChatSessions(sessions)
-	if err := savePanelChatSessions(cfg, sessions); err != nil {
+	if err := savePanelChatSessionsUnlocked(cfg, sessions); err != nil {
 		return nil, err
 	}
 	for i := range sessions {
@@ -1051,6 +1216,10 @@ func CreatePanelChatSession(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 		if agentID == "" {
 			agentID = loadDefaultAgentID(cfg)
 		}
+		if err := validatePanelChatParticipants(cfg, agentID, req.AgentIDs, req.SummaryAgentID); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": err.Error()})
+			return
+		}
 		participants := normalizePanelChatParticipantInput(req.AgentIDs, agentID, req.SummaryAgentID)
 		chatType := normalizePanelChatType(req.ChatType)
 		if len(participants) > 1 || strings.TrimSpace(req.SummaryAgentID) != "" {
@@ -1079,18 +1248,19 @@ func CreatePanelChatSession(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			UpdatedAt:         now,
 		}
 
-		sessions, err := loadPanelChatSessions(cfg)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
-			return
-		}
-		sessions = append(sessions, session)
-		sortPanelChatSessions(sessions)
 		if err := model.ReplacePanelChatParticipants(db, session.ID, participants); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
 			return
 		}
-		if err := savePanelChatSessions(cfg, sessions); err != nil {
+		panelChatSessionsFileMu.Lock()
+		sessions, err := loadPanelChatSessionsUnlocked(cfg)
+		if err == nil {
+			sessions = append(sessions, session)
+			sortPanelChatSessions(sessions)
+			err = savePanelChatSessionsUnlocked(cfg, sessions)
+		}
+		panelChatSessionsFileMu.Unlock()
+		if err != nil {
 			_ = model.DeletePanelChatParticipants(db, session.ID)
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
 			return
@@ -1129,6 +1299,14 @@ func GetPanelChatSessionDetail(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 
 func RenamePanelChatSession(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		sessionID := strings.TrimSpace(c.Param("id"))
+		lock := panelChatSessionLock(sessionID)
+		lock.Lock()
+		defer lock.Unlock()
+		if _, busy := panelChatSessionBusy.Load(sessionID); busy {
+			c.JSON(http.StatusConflict, gin.H{"ok": false, "error": "当前会话正在处理中，无法重命名"})
+			return
+		}
 		var req struct {
 			Title string `json:"title"`
 		}
@@ -1137,7 +1315,7 @@ func RenamePanelChatSession(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 		title := buildPanelChatTitle(req.Title)
-		session, err := updatePanelChatSessionState(cfg, c.Param("id"), func(item *panelChatSession) {
+		session, err := updatePanelChatSessionState(cfg, sessionID, func(item *panelChatSession) {
 			item.Title = title
 			item.UpdatedAt = time.Now().UnixMilli()
 		})
@@ -1173,6 +1351,11 @@ func SendPanelChatMessage(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			c.JSON(http.StatusNotFound, gin.H{"ok": false, "error": "会话不存在"})
 			return
 		}
+		if !panelChatTryAcquireBusy(session.ID) {
+			c.JSON(http.StatusConflict, gin.H{"ok": false, "error": "当前会话正在处理中，请稍后重试或先取消当前请求"})
+			return
+		}
+		defer panelChatReleaseBusy(session.ID)
 		if _, err := updatePanelChatSessionState(cfg, session.ID, func(item *panelChatSession) {
 			item.Processing = true
 			item.CurrentAgentID = ""
@@ -1196,9 +1379,10 @@ func SendPanelChatMessage(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 		}
 		reply := ""
 		actualSessionID := ""
+		participantSessionUpdates := map[string]string{}
 		var runErr error
 		if session.ChatType == "group" || len(participants) > 1 {
-			existingMessages, reply, runErr = executeGroupPanelChat(c.Request.Context(), db, cfg, *session, participants, existingMessages, strings.TrimSpace(req.Message))
+			existingMessages, reply, participantSessionUpdates, runErr = executeGroupPanelChat(c.Request.Context(), cfg, *session, participants, existingMessages, strings.TrimSpace(req.Message))
 		} else {
 			reply, actualSessionID, runErr = runPanelChatMessage(c.Request.Context(), cfg, *session, strings.TrimSpace(req.Message))
 			if strings.TrimSpace(actualSessionID) != "" {
@@ -1213,17 +1397,6 @@ func SendPanelChatMessage(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 				item.OpenClawSessionID = strings.TrimSpace(actualSessionID)
 			}
 		})
-		if runErr != nil {
-			if errors.Is(runErr, errPanelChatCanceled) {
-				c.JSON(http.StatusOK, gin.H{"ok": false, "canceled": true})
-				return
-			}
-			if !errors.Is(runErr, errPanelChatTimeout) {
-				c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": runErr.Error()})
-				return
-			}
-		}
-
 		if session.ChatType != "group" && len(participants) <= 1 {
 			rawMessages, historyErr := readSessionMessages(panelChatRuntimeSessionFile(cfg, *session), 400)
 			if historyErr == nil {
@@ -1245,6 +1418,12 @@ func SendPanelChatMessage(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
 			return
 		}
+		if len(participantSessionUpdates) > 0 {
+			if err := persistPanelChatParticipantSessions(db, session.ID, participantSessionUpdates); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
+				return
+			}
+		}
 
 		reply = panelChatEffectiveReply(existingMessages, reply)
 		updated, err := updatePanelChatSessionState(cfg, session.ID, func(item *panelChatSession) {
@@ -1262,6 +1441,16 @@ func SendPanelChatMessage(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 		}
 		decoratePanelChatSession(db, cfg, updated)
 		participants, _ = loadPanelChatParticipants(db, cfg, *updated)
+		if runErr != nil {
+			if errors.Is(runErr, errPanelChatCanceled) {
+				c.JSON(http.StatusOK, gin.H{"ok": false, "canceled": true, "session": updated, "messages": existingMessages, "participants": participants})
+				return
+			}
+			if !errors.Is(runErr, errPanelChatTimeout) {
+				c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": runErr.Error(), "session": updated, "messages": existingMessages, "participants": participants})
+				return
+			}
+		}
 
 		c.JSON(http.StatusOK, gin.H{
 			"ok":           true,
@@ -1276,14 +1465,26 @@ func SendPanelChatMessage(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 
 func DeletePanelChatSession(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		sessions, err := loadPanelChatSessions(cfg)
+		sessionID := strings.TrimSpace(c.Param("id"))
+		lock := panelChatSessionLock(sessionID)
+		lock.Lock()
+		defer lock.Unlock()
+		panelChatSessionsFileMu.Lock()
+		sessions, err := loadPanelChatSessionsUnlocked(cfg)
 		if err != nil {
+			panelChatSessionsFileMu.Unlock()
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
 			return
 		}
-		idx, session := findPanelChatSession(sessions, c.Param("id"))
+		idx, session := findPanelChatSession(sessions, sessionID)
 		if session == nil {
+			panelChatSessionsFileMu.Unlock()
 			c.JSON(http.StatusNotFound, gin.H{"ok": false, "error": "会话不存在"})
+			return
+		}
+		if _, busy := panelChatSessionBusy.Load(session.ID); busy {
+			panelChatSessionsFileMu.Unlock()
+			c.JSON(http.StatusConflict, gin.H{"ok": false, "error": "当前会话正在处理中，无法删除"})
 			return
 		}
 		currentParticipants, err := loadPanelChatParticipants(db, cfg, *session)
@@ -1294,10 +1495,12 @@ func DeletePanelChatSession(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 		participantBackup := clonePanelChatParticipants(currentParticipants)
 		sessions = append(sessions[:idx], sessions[idx+1:]...)
 		if err := model.DeletePanelChatParticipants(db, session.ID); err != nil {
+			panelChatSessionsFileMu.Unlock()
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
 			return
 		}
-		if err := savePanelChatSessions(cfg, sessions); err != nil {
+		if err := savePanelChatSessionsUnlocked(cfg, sessions); err != nil {
+			panelChatSessionsFileMu.Unlock()
 			if len(participantBackup) == 0 {
 				participantBackup = normalizePanelChatParticipantInput([]string{session.AgentID}, session.AgentID, session.SummaryAgentID)
 			}
@@ -1305,6 +1508,7 @@ func DeletePanelChatSession(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
 			return
 		}
+		panelChatSessionsFileMu.Unlock()
 		_ = os.Remove(panelChatMessagesPath(cfg, session.ID))
 		_ = os.Remove(panelChatSessionFile(cfg, session.AgentID, session.OpenClawSessionID))
 		_ = os.RemoveAll(panelChatRuntimeRoot(cfg, session.ID))
