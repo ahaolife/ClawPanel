@@ -431,6 +431,8 @@ func rewritePanelChatRuntimeConfig(cfg *config.Config, srcConfigPath, dstConfigP
 	}
 	agentsMap["list"] = newList
 	obj["agents"] = agentsMap
+	delete(obj, "channels")
+	delete(obj, "plugins")
 	encoded, err := json.MarshalIndent(obj, "", "  ")
 	if err != nil {
 		return err

@@ -469,6 +469,18 @@ function dedupeSessionActivity(items: SessionActivityItem[]) {
   return Array.from(map.values()).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 }
 
+function isSyntheticApprovalCallbackMessage(message: { role?: string; content?: string } | null | undefined) {
+  const text = String(message?.content || '').trim().toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes('an async command the user already approved has completed') ||
+    text.includes('do not run the command again') ||
+    text.includes('exact completion details:') ||
+    text.includes('exec denied (') ||
+    text.includes('approval-timeout')
+  );
+}
+
 function buildRecentFeed(logs: LogEntry[], sessions: SessionActivityItem[]): RecentFeedItem[] {
   const feed: RecentFeedItem[] = logs.map(entry => ({
     id: String(entry.id),
@@ -496,8 +508,20 @@ function buildRecentFeed(logs: LogEntry[], sessions: SessionActivityItem[]): Rec
     const channel = session.lastChannel || session.originProvider || 'agent';
     const recentMessages = Array.isArray(session.recentMessages) ? session.recentMessages : [];
     if (recentMessages.length > 0) {
+      let skipNextAssistantReply = false;
       recentMessages.forEach((msg, idx) => {
+        if (isSyntheticApprovalCallbackMessage(msg)) {
+          skipNextAssistantReply = true;
+          return;
+        }
+
         const role = String(msg.role || 'user');
+        if (skipNextAssistantReply && role === 'assistant') {
+          skipNextAssistantReply = false;
+          return;
+        }
+        skipNextAssistantReply = false;
+
         const ts = msg.timestamp ? new Date(msg.timestamp).getTime() : (session.updatedAt || 0) + idx;
         const source = role === 'assistant' ? 'openclaw' : channel;
         const content = String(msg.content || '').trim();

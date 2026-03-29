@@ -247,7 +247,7 @@ func TestRewritePanelChatRuntimeConfigSynthesizesImplicitAgent(t *testing.T) {
 	}
 	src := filepath.Join(root, "src-openclaw.json")
 	dst := filepath.Join(root, "dst-openclaw.json")
-	if err := os.WriteFile(src, []byte(`{"agents":{"defaults":{"workspace":"/tmp/work"}},"models":{"providers":{}}}`), 0o644); err != nil {
+	if err := os.WriteFile(src, []byte(`{"agents":{"defaults":{"workspace":"/tmp/work"}},"models":{"providers":{}},"channels":{"qqbot":{"appId":"123"}},"plugins":{"entries":{"qqbot":{"enabled":true}}}}`), 0o644); err != nil {
 		t.Fatalf("write src config failed: %v", err)
 	}
 	session := panelChatSession{ID: "panel-1", AgentID: "main"}
@@ -270,5 +270,11 @@ func TestRewritePanelChatRuntimeConfigSynthesizesImplicitAgent(t *testing.T) {
 	agent := list[0].(map[string]interface{})
 	if got := agent["id"]; got != panelChatScopedAgentID(session.ID, session.AgentID) {
 		t.Fatalf("unexpected synthesized id: %#v", got)
+	}
+	if _, ok := obj["channels"]; ok {
+		t.Fatalf("expected panel chat runtime config to omit channels, got %#v", obj["channels"])
+	}
+	if _, ok := obj["plugins"]; ok {
+		t.Fatalf("expected panel chat runtime config to omit plugins, got %#v", obj["plugins"])
 	}
 }
