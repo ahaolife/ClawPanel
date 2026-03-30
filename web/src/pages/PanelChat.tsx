@@ -120,6 +120,7 @@ export default function PanelChat() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const abortMarkerHandledRef = useRef<Record<string, boolean>>({});
   const activeRequestIdRef = useRef(0);
+  const composingRef = useRef(false);
 
   const text = useMemo(() => {
     if (locale === 'en') {
@@ -834,7 +835,12 @@ export default function PanelChat() {
               <textarea
                 value={input}
                 onChange={event => setInput(event.target.value)}
+                onCompositionStart={() => { composingRef.current = true; }}
+                onCompositionEnd={() => { composingRef.current = false; }}
                 onKeyDown={event => {
+                  if (event.nativeEvent.isComposing || composingRef.current || (event as unknown as { keyCode?: number }).keyCode === 229) {
+                    return;
+                  }
                   if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault();
                     void handleSend();

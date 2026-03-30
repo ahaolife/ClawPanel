@@ -251,7 +251,7 @@ func TestRewritePanelChatRuntimeConfigSynthesizesImplicitAgent(t *testing.T) {
 		t.Fatalf("write src config failed: %v", err)
 	}
 	session := panelChatSession{ID: "panel-1", AgentID: "main"}
-	if err := rewritePanelChatRuntimeConfig(cfg, src, dst, session); err != nil {
+	if err := rewritePanelChatRuntimeConfig(cfg, src, dst, session, ""); err != nil {
 		t.Fatalf("rewritePanelChatRuntimeConfig failed: %v", err)
 	}
 	data, err := os.ReadFile(dst)
@@ -276,5 +276,42 @@ func TestRewritePanelChatRuntimeConfigSynthesizesImplicitAgent(t *testing.T) {
 	}
 	if _, ok := obj["plugins"]; ok {
 		t.Fatalf("expected panel chat runtime config to omit plugins, got %#v", obj["plugins"])
+	}
+}
+
+func TestRewritePanelChatRuntimeConfigPreservesConfiguredWorkspace(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspaces", "writer")
+	cfg := &config.Config{
+		DataDir:     filepath.Join(root, "data"),
+		OpenClawDir: filepath.Join(root, ".openclaw"),
+		Edition:     "pro",
+	}
+	if err := os.MkdirAll(filepath.Join(cfg.OpenClawDir, "agents", "writer", "agent"), 0o755); err != nil {
+		t.Fatalf("mkdir agent dir failed: %v", err)
+	}
+	src := filepath.Join(root, "src-openclaw.json")
+	dst := filepath.Join(root, "dst-openclaw.json")
+	content := `{"agents":{"list":[{"id":"writer","workspace":"` + filepath.ToSlash(workspace) + `"}]}}`
+	if err := os.WriteFile(src, []byte(content), 0o644); err != nil {
+		t.Fatalf("write src config failed: %v", err)
+	}
+	session := panelChatSession{ID: "panel-2", AgentID: "writer"}
+	if err := rewritePanelChatRuntimeConfig(cfg, src, dst, session, workspace); err != nil {
+		t.Fatalf("rewritePanelChatRuntimeConfig failed: %v", err)
+	}
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read dst config failed: %v", err)
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal(data, &obj); err != nil {
+		t.Fatalf("unmarshal dst config failed: %v", err)
+	}
+	agents := obj["agents"].(map[string]interface{})
+	list := agents["list"].([]interface{})
+	agent := list[0].(map[string]interface{})
+	if got := agent["workspace"]; got != filepath.ToSlash(workspace) {
+		t.Fatalf("expected workspace %q, got %#v", filepath.ToSlash(workspace), got)
 	}
 }

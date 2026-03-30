@@ -281,15 +281,16 @@ func ensurePanelChatRuntime(cfg *config.Config, session panelChatSession) (state
 		return "", "", "", err
 	}
 	srcWorkspace := resolveAgentWorkspacePath(cfg, session.AgentID)
+	runtimeWorkspace := filepath.ToSlash(filepath.Join("openclaw-work", scopedAgentID))
 	dstWorkspace := filepath.Join(workDir, "openclaw-work", scopedAgentID)
-	if strings.TrimSpace(srcWorkspace) != "" {
-		if err = syncDirPreferSource(srcWorkspace, dstWorkspace); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if strings.TrimSpace(srcWorkspace) == "" {
+		if err = os.MkdirAll(dstWorkspace, 0o755); err != nil {
 			return "", "", "", err
 		}
-	} else if err = os.MkdirAll(dstWorkspace, 0o755); err != nil {
-		return "", "", "", err
+	} else {
+		runtimeWorkspace = filepath.ToSlash(srcWorkspace)
 	}
-	if err = rewritePanelChatRuntimeConfig(cfg, sourceConfigPath, configPath, session); err != nil {
+	if err = rewritePanelChatRuntimeConfig(cfg, sourceConfigPath, configPath, session, runtimeWorkspace); err != nil {
 		return "", "", "", err
 	}
 	return stateDir, configPath, workDir, nil
@@ -394,7 +395,7 @@ func copyDirWithoutSessions(src, dst string) error {
 	})
 }
 
-func rewritePanelChatRuntimeConfig(cfg *config.Config, srcConfigPath, dstConfigPath string, session panelChatSession) error {
+func rewritePanelChatRuntimeConfig(cfg *config.Config, srcConfigPath, dstConfigPath string, session panelChatSession, runtimeWorkspace string) error {
 	data, err := os.ReadFile(srcConfigPath)
 	if err != nil {
 		return err
@@ -416,16 +417,24 @@ func rewritePanelChatRuntimeConfig(cfg *config.Config, srcConfigPath, dstConfigP
 		}
 		scopedID := panelChatScopedAgentID(session.ID, session.AgentID)
 		cloned["id"] = scopedID
-		cloned["workspace"] = filepath.ToSlash(filepath.Join("openclaw-work", scopedID))
+		if strings.TrimSpace(runtimeWorkspace) != "" {
+			cloned["workspace"] = filepath.ToSlash(runtimeWorkspace)
+		} else {
+			cloned["workspace"] = filepath.ToSlash(filepath.Join("openclaw-work", scopedID))
+		}
 		cloned["default"] = true
 		newList = append(newList, cloned)
 		break
 	}
 	if len(newList) == 0 && strings.TrimSpace(session.AgentID) != "" {
 		scopedID := panelChatScopedAgentID(session.ID, session.AgentID)
+		workspace := strings.TrimSpace(runtimeWorkspace)
+		if workspace == "" {
+			workspace = filepath.ToSlash(filepath.Join("openclaw-work", scopedID))
+		}
 		newList = append(newList, map[string]interface{}{
 			"id":        scopedID,
-			"workspace": filepath.ToSlash(filepath.Join("openclaw-work", scopedID)),
+			"workspace": filepath.ToSlash(workspace),
 			"default":   true,
 		})
 	}
